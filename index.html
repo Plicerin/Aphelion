@@ -434,9 +434,48 @@
     font-size: 9px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 10px;
   }
-  #target-flyout .target-flyout-meta strong { color: var(--accent); font-weight: 700; }
-  #target-flyout .target-flyout-sep { margin: 0 6px; opacity: 0.5; }
+  #target-flyout .target-flyout-distance-label { color: var(--muted); }
+  #target-flyout .target-flyout-distance-value {
+    color: var(--ink);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Jump button inside the flyout. Re-enables pointer events (the flyout
+     root has pointer-events: none so the chart underneath stays clickable
+     for unlocking by clicking elsewhere). */
+  #target-flyout .target-flyout-jump {
+    pointer-events: auto;
+    display: block;
+    width: 100%;
+    background: var(--accent);
+    color: #02030a;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(124, 247, 255, 0.4);
+    transition: transform 0.08s, box-shadow 0.15s;
+  }
+  #target-flyout .target-flyout-jump:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 22px rgba(124, 247, 255, 0.6);
+  }
+  #target-flyout .target-flyout-jump:active {
+    transform: translateY(0);
+  }
 
   /* ============== Flight HUD ============== */
   #hud-bl, #hud-br {
@@ -555,9 +594,6 @@
     <div class="description" id="sysDesc">—</div>
   </div>
 
-  <!-- Hyperspace jump button (chart screen only) -->
-  <button id="jump-btn" class="show-chart" type="button" disabled>JUMP</button>
-
   <!-- Target-locked flyout (chart screen only, only when something is locked) -->
   <div id="target-flyout" class="show-chart" hidden>
     <div class="target-flyout-leader"></div>
@@ -565,10 +601,10 @@
       <div class="target-flyout-status">◉ Target Locked</div>
       <div class="target-flyout-name" id="target-flyout-name">—</div>
       <div class="target-flyout-meta">
-        <span id="target-flyout-distance">—</span>
-        <span class="target-flyout-sep">·</span>
-        <span class="target-flyout-hint">Click <strong>JUMP</strong> to engage</span>
+        <span class="target-flyout-distance-label">Distance</span>
+        <span class="target-flyout-distance-value" id="target-flyout-distance">—</span>
       </div>
+      <button class="target-flyout-jump" id="target-flyout-jump" type="button">Engage Jump</button>
     </div>
   </div>
 
@@ -1255,10 +1291,6 @@ function renderChart(state, theme, dt){
     }
   }
 
-  // Update jump button: enabled only when something is locked.
-  const jumpBtn = document.getElementById('jump-btn');
-  jumpBtn.disabled = !chartLocked || !!countdown;
-
   // Update the target-locked flyout (positioning + content).
   updateTargetFlyout(state);
 }
@@ -1846,11 +1878,18 @@ addEventListener('keydown', (e)=>{ if(e.key==='Escape') themePicker.classList.re
 
 /* ===== 14. Main loop + screen manager ===== */
 
+// The player conceptually starts parked at the first system of galaxy 0.
+// This gives every "distance to target" calculation a real reference point
+// from the very first frame, before the player has actually jumped anywhere.
+// (In Elite tradition: this is your starting system, your Lave.)
+const _initialGalaxies = generateAllGalaxies();
+const _startingSystem = _initialGalaxies[0].systems[0];
+
 let game = {
   screen: 'chart',
-  galaxies: generateAllGalaxies(),
+  galaxies: _initialGalaxies,
   galaxyIdx: 0,
-  currentSystemSeed: null,
+  currentSystemSeed: _startingSystem.seed,
   selectedSystemSeed: null,
   ship: INITIAL_SHIP,
   hyperspaceT: 0,
@@ -2013,7 +2052,11 @@ function tickCountdown(dt){
 }
 
 // Jump button click: starts the countdown rather than jumping directly.
-document.getElementById('jump-btn').addEventListener('click', ()=>{
+document.getElementById('target-flyout-jump').addEventListener('click', (e)=>{
+  // Stop propagation so the chart's mousedown handler doesn't see this
+  // click and treat it as a "click on empty chart space" that would
+  // unlock the target.
+  e.stopPropagation();
   if(chartLocked && !countdown) startCountdown();
 });
 
