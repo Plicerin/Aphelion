@@ -911,6 +911,59 @@ function stepShip(ship, c, dt){
 }
 const INITIAL_SHIP = { position:V_ZERO, orientation:Q_IDENTITY, velocity:V_ZERO, throttle:0, speed:0 };
 
+/* ===== 5b. Trade anchor =====
+   Each system has one trade anchor, a fixed point in flight world-space
+   near the planet that resolves into a readable trade interface as the
+   player approaches. No alignment puzzle on docking — combat is the
+   skill check; arriving at an anchor is the payoff.
+
+   Stages by ship-to-anchor distance:
+     silent  — > FAR. Renderer ignores it.
+     far     — single bright pixel + messy bloom.
+     medium  — noisy glyph cloud, "fragmented signal" literalized.
+     close   — stable HUD overlay; holding inside DOCK_RADIUS opens trade.
+*/
+const ANCHOR_RANGE_FAR = 100;
+const ANCHOR_RANGE_MEDIUM = 25;
+const ANCHOR_RANGE_CLOSE = 6;
+const ANCHOR_DOCK_RADIUS = 3;
+const ANCHOR_OFFSET_MIN = 8;
+const ANCHOR_OFFSET_MAX = 14;
+const ANCHOR_OFFSET_MAX_ELEVATION = 0.3;
+
+function placeAnchor(planetPos, seed){
+  const [s0, s1, s2] = seed;
+  const azBits = (s1 ^ (s2 >> 3) ^ (s0 << 1)) & 0xffff;
+  const elBits = (s2 ^ (s0 >> 5) ^ (s1 << 2)) & 0xffff;
+  const distBits = ((s0 ^ s1 ^ s2) >> 4) & 0xff;
+  const az = (azBits / 0x10000) * Math.PI * 2;
+  const el = ((elBits / 0x10000) - 0.5) * 2 * ANCHOR_OFFSET_MAX_ELEVATION;
+  const dist = ANCHOR_OFFSET_MIN + (distBits / 0xff) * (ANCHOR_OFFSET_MAX - ANCHOR_OFFSET_MIN);
+  const cosEl = Math.cos(el);
+  const ox = Math.cos(az) * cosEl * dist;
+  const oy = Math.sin(el) * dist;
+  const oz = Math.sin(az) * cosEl * dist;
+  return { position: [planetPos[0] + ox, planetPos[1] + oy, planetPos[2] + oz] };
+}
+
+function anchorStage(shipPos, anchorPos){
+  const dx = shipPos[0] - anchorPos[0];
+  const dy = shipPos[1] - anchorPos[1];
+  const dz = shipPos[2] - anchorPos[2];
+  const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  if(distance >= ANCHOR_RANGE_FAR) return { stage:'silent', distance, t:0 };
+  if(distance >= ANCHOR_RANGE_MEDIUM){
+    const span = ANCHOR_RANGE_FAR - ANCHOR_RANGE_MEDIUM;
+    return { stage:'far', distance, t:(ANCHOR_RANGE_FAR - distance) / span };
+  }
+  if(distance >= ANCHOR_RANGE_CLOSE){
+    const span = ANCHOR_RANGE_MEDIUM - ANCHOR_RANGE_CLOSE;
+    return { stage:'medium', distance, t:(ANCHOR_RANGE_MEDIUM - distance) / span };
+  }
+  const t = Math.max(0, Math.min(1, (ANCHOR_RANGE_CLOSE - distance) / ANCHOR_RANGE_CLOSE));
+  return { stage:'close', distance, t };
+}
+
 /* ===== 6. Game state ===== */
 function reduce(state, action){
   switch(action.type){
