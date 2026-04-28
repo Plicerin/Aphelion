@@ -862,21 +862,21 @@ function systemStatus(sys){
 function resolveColor(c){ return typeof c==='number' ? {h:c,s:90,l:60} : c; }
 const THEMES = [
   { id:'cyan', name:'Cyan',
-    hues:{ hull:195, planet:195, dust:200, frame:195, dash:38, system:195, selected:38, grid:195, accent:195, warn:12 } },
+    hues:{ hull:195, planet:195, dust:200, frame:195, dash:38, system:195, selected:38, grid:195, accent:195, warn:12, status:195 } },
   { id:'phosphor', name:'Green Phosphor',
-    hues:{ hull:110, planet:110, dust:100, frame:110, dash:75, system:110, selected:75, grid:110, accent:110, warn:50 } },
+    hues:{ hull:110, planet:110, dust:100, frame:110, dash:75, system:110, selected:75, grid:110, accent:110, warn:50, status:155 } },
   { id:'amber', name:'Amber Monochrome',
-    hues:{ hull:38, planet:38, dust:45, frame:38, dash:30, system:38, selected:30, grid:38, accent:38, warn:12 } },
+    hues:{ hull:38, planet:38, dust:45, frame:38, dash:30, system:38, selected:30, grid:38, accent:38, warn:12, status:38 } },
   { id:'ember', name:'Cyan & Amber',
-    hues:{ hull:195, planet:28, dust:210, frame:195, dash:28, system:195, selected:28, grid:200, accent:28, warn:0 } },
+    hues:{ hull:195, planet:28, dust:210, frame:195, dash:28, system:195, selected:28, grid:200, accent:28, warn:0, status:195 } },
   { id:'plasma', name:'Magenta Synthwave',
-    hues:{ hull:290, planet:290, dust:270, frame:290, dash:320, system:290, selected:320, grid:280, accent:320, warn:60 } },
+    hues:{ hull:290, planet:290, dust:270, frame:290, dash:320, system:290, selected:320, grid:280, accent:320, warn:60, status:200 } },
   { id:'spectrum', name:'Full Color',
     hues:{
       hull:{h:210,s:25,l:75}, planet:{h:195,s:55,l:60}, dust:{h:210,s:15,l:88},
       frame:{h:30,s:20,l:60}, dash:{h:130,s:75,l:60}, system:{h:50,s:25,l:85},
       selected:{h:38,s:95,l:65}, grid:{h:210,s:30,l:50}, accent:{h:38,s:90,l:65},
-      warn:{h:0,s:95,l:60},
+      warn:{h:0,s:95,l:60}, status:{h:170,s:60,l:60},
     } },
 ];
 const THEME_KEY = 'aphelion.theme';
@@ -910,6 +910,48 @@ function stepShip(ship, c, dt){
   return { position, orientation, velocity, throttle, speed };
 }
 const INITIAL_SHIP = { position:V_ZERO, orientation:Q_IDENTITY, velocity:V_ZERO, throttle:0, speed:0 };
+
+/* ===== 5c. Cockpit sim functions =====
+   Pure helpers behind the four cheap dashboard indicators: compass,
+   fuel, cabin heat, mass lock. Mirrors src/sim/cockpit.ts.
+*/
+const FUEL_MAX_LY = 7.0;
+const MASS_LOCK_RADIUS = 80;
+function compass(cur, tgt){
+  if(!cur || !tgt) return null;
+  if(cur.x === tgt.x && cur.y === tgt.y) return null;
+  return Math.atan2(tgt.y - cur.y, tgt.x - cur.x);
+}
+function fuelCost(ly){ return Math.max(0, ly); }
+function canJump(fuel, ly){ return fuel >= fuelCost(ly) - 1e-9; }
+function fuelAfterJump(fuel, ly){
+  const r = fuel - fuelCost(ly);
+  if(r < 0) return 0;
+  if(r > FUEL_MAX_LY) return FUEL_MAX_LY;
+  return r;
+}
+function cabinHeat(shipPos, sunPos, dangerRadius, coolRadius){
+  dangerRadius = dangerRadius == null ? 35 : dangerRadius;
+  coolRadius = coolRadius == null ? 200 : coolRadius;
+  const dx = shipPos[0] - sunPos[0];
+  const dy = shipPos[1] - sunPos[1];
+  const dz = shipPos[2] - sunPos[2];
+  const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  if(d >= coolRadius) return 0;
+  if(d <= dangerRadius) return 1;
+  return 1 - (d - dangerRadius) / (coolRadius - dangerRadius);
+}
+function isMassLocked(shipPos, bodies, mlRadius){
+  mlRadius = mlRadius == null ? MASS_LOCK_RADIUS : mlRadius;
+  const r2 = mlRadius * mlRadius;
+  for(const b of bodies){
+    const dx = shipPos[0] - b[0];
+    const dy = shipPos[1] - b[1];
+    const dz = shipPos[2] - b[2];
+    if(dx*dx + dy*dy + dz*dz <= r2) return true;
+  }
+  return false;
+}
 
 /* ===== 5b. Trade anchor =====
    Each system has one trade anchor, a fixed point in flight world-space
@@ -969,9 +1011,23 @@ function reduce(state, action){
   switch(action.type){
     case 'select-system':
       return { ...state, selectedSystemSeed: action.seed };
-    case 'begin-hyperspace':
+    case 'begin-hyperspace': {
       if(!state.selectedSystemSeed) return state;
-      return { ...state, screen:'hyperspace', hyperspaceT:0 };
+      // Compute LY cost and deduct fuel. Gate the jump if we don't
+      // have enough fuel — silently no-op (UI should disable the
+      // jump button when canJump is false).
+      const cur = state.currentSystemSeed
+        ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
+        : null;
+      const tgt = findSystemBySeed(state.galaxies, state.selectedSystemSeed);
+      let newFuel = state.fuel ?? FUEL_MAX_LY;
+      if(cur && tgt){
+        const ly = Math.hypot((tgt.x - cur.x) * 0.5, (tgt.y - cur.y) * 0.5);
+        if(!canJump(newFuel, ly)) return state;
+        newFuel = fuelAfterJump(newFuel, ly);
+      }
+      return { ...state, screen:'hyperspace', hyperspaceT:0, fuel: newFuel };
+    }
     case 'arrive-in-system':
       return {
         ...state, screen:'flight',
@@ -1072,7 +1128,10 @@ function renderLayers(layers, cell, cols, rows, W, H){
         if(L.grid[idx] > bestV){ bestV=L.grid[idx]; bestL=L; }
       }
       if(bestV < 0.06) continue;
-      const ch = ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
+      // Per-layer chars[idx] override (proposed-style deliberate glyphs);
+      // falls back to the brightness ramp when not set (chart layers etc).
+      const ch = (bestL.chars && bestL.chars[idx])
+        || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
       const x=gx*cell+cell/2, y=gy*cell+cell/2;
       const c=bestL.color;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
@@ -1090,9 +1149,10 @@ function renderLayers(layers, cell, cols, rows, W, H){
   for(const L of layers){
     const b=getBucket(L.name);
     if(!b.canvas.width || !b.canvas.height) continue;
+    const mul = L.bloomMul || 1;     // boost glow for atmospheric layers (planet)
     for(const p of passes){
       ctx.filter=`blur(${p.blur}px)`;
-      ctx.globalAlpha=p.alpha*0.7;
+      ctx.globalAlpha = Math.min(1, p.alpha*0.7 * mul);
       ctx.drawImage(b.canvas, 0, 0, W, H);
     }
   }
@@ -1520,7 +1580,58 @@ function buildSystemBodies(sys){
 }
 
 const FOV_FLIGHT = 380;
-const FLIGHT_CELL = 8;
+
+/* Two cell scales coexist on the flight canvas:
+   - World layers (chunky, ~14px) — atmosphere, planet, dust, anchor.
+     Reads as glowing ASCII rather than a brightness ramp.
+   - Instrument layers (fine, ~7px) — cockpit frame, scanner, holo-disks,
+     reticle, mini-bars. Need precision the chunky cells can't deliver.
+   The cockpit body is masked solid black between the two passes so the
+   instruments aren't fighting bright world content for legibility. */
+const FLIGHT_WORLD_CELL = 14;
+const FLIGHT_INST_CELL = 7;
+const FLIGHT_CELL = FLIGHT_WORLD_CELL;     // legacy alias (drawAnchorStage etc.)
+
+/* Per-layer glyph palettes (proposed-style deliberate ASCII). */
+const FLIGHT_GLYPHS = {
+  star:       ['*','+','·',':',"'", '·', '·'],
+  dust:       ['·','·','·',"'",',',':',';','`','°','*','·'],
+  planetBody: ['o','O','0','D','c','d','b','B',':',';',',','.', "'", '·','*','%','&','@','#','+'],
+  blockFill:  ['█','▓','▒','░'],
+};
+function pHash(x, y, salt){
+  let h = (x|0) * 73856093 ^ (y|0) * 19349663 ^ (salt|0) * 83492791;
+  h = (h ^ (h >> 13)) * 1274126177;
+  h = h ^ (h >> 16);
+  return (h >>> 0) / 0x100000000;
+}
+function pPick(x, y, salt, arr){ return arr[Math.floor(pHash(x, y, salt) * arr.length)]; }
+function slopeChar(dx, dy){
+  const a = Math.atan2(dy, dx);
+  const am = a < 0 ? a + Math.PI : a;
+  if (am < Math.PI/8 || am > 7*Math.PI/8) return '─';
+  if (am > 3*Math.PI/8 && am < 5*Math.PI/8) return '│';
+  if (am >= Math.PI/8 && am <= 3*Math.PI/8) return '\\';
+  return '/';
+}
+function blockChar(v){
+  if (v >= 0.85) return '█';
+  if (v >= 0.6)  return '▓';
+  if (v >= 0.35) return '▒';
+  return '░';
+}
+
+/* Make a flight render layer. Carries its own cell size, intensity grid,
+   per-cell character grid, and a bloom multiplier. The renderLayers
+   compositor reads chars[idx] when set; falls back to the brightness
+   ramp otherwise. */
+function makeFlightLayer(name, color, cell, cols, rows, bloomMul = 1){
+  return {
+    name, color, cell, cols, rows, bloomMul,
+    grid: new Float32Array(cols * rows),
+    chars: new Array(cols * rows).fill(null),
+  };
+}
 
 /**
  * Write the trade-anchor's intensity into the grid for one frame.
@@ -1619,32 +1730,45 @@ function renderFlight(state, theme, dt){
   }
 
   const W=innerWidth, H=innerHeight;
-  const cols=Math.ceil(W/FLIGHT_CELL), rows=Math.ceil(H/FLIGHT_CELL);
+  const wCell = FLIGHT_WORLD_CELL, iCell = FLIGHT_INST_CELL;
+  const wCols = Math.ceil(W/wCell), wRows = Math.ceil(H/wCell);
+  const iCols = Math.ceil(W/iCell), iRows = Math.ceil(H/iCell);
+  const tSec = performance.now() / 1000;
 
   ctx.fillStyle='rgba(2, 3, 10, 1)';
   ctx.fillRect(0, 0, W, H);
 
   const invOrient = qConjugate(state.ship.orientation);
-  const gStars = new Float32Array(cols*rows);
-  const gDust  = new Float32Array(cols*rows);
-  const gFrame = new Float32Array(cols*rows);
-  const gPlanet = new Float32Array(cols*rows);
-  const gSun = new Float32Array(cols*rows);
-  const gAnchor = new Float32Array(cols*rows);
 
-  // Stars
+  /* ============================================================
+     LAYER ALLOCATION (world chunky, instruments fine)
+     ============================================================ */
+  const lStars     = makeFlightLayer('stars',     resolveColor(theme.hues.system),   wCell, wCols, wRows);
+  const lSun       = makeFlightLayer('sun',       resolveColor(theme.hues.warn),     wCell, wCols, wRows, 1.4);
+  const lPlanet    = makeFlightLayer('planet',    resolveColor(theme.hues.planet),   wCell, wCols, wRows, 1.6);
+  const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     wCell, wCols, wRows, 1.4);
+  const lDust      = makeFlightLayer('dust',      resolveColor(theme.hues.dust),     wCell, wCols, wRows);
+  const lAnchor    = makeFlightLayer('anchor',    resolveColor(theme.hues.selected), wCell, wCols, wRows);
+  const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows);
+  const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows);
+  const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows);
+
+  /* ---- WORLD: stars ---- */
   for(const s of stars){
     const cam = qRotate(invOrient, s.pos);
     if(cam[2] < 0.05) continue;
     const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
     const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-    const gx = Math.round(px/FLIGHT_CELL), gy = Math.round(py/FLIGHT_CELL);
-    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
-    const idx = gy*cols+gx;
-    if(s.mag > gStars[idx]) gStars[idx] = s.mag;
+    const gx = Math.round(px/wCell), gy = Math.round(py/wCell);
+    if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
+    const idx = gy*wCols+gx;
+    if(s.mag > lStars.grid[idx]){
+      lStars.grid[idx] = s.mag;
+      lStars.chars[idx] = s.mag > 0.55 ? '*' : s.mag > 0.4 ? '+' : '·';
+    }
   }
 
-  // Sun (if in a system) — a single bright point with a halo around it.
+  /* ---- WORLD: sun (halo) ---- */
   if(systemBodies){
     const sunWorld = [
       systemBodies.sun.pos[0] - state.ship.position[0],
@@ -1655,9 +1779,7 @@ function renderFlight(state, theme, dt){
     if(cam[2] > 0.5){
       const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
       const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-      const cx = Math.round(px/FLIGHT_CELL), cy = Math.round(py/FLIGHT_CELL);
-      // Halo radius depends on distance — bright but compact when far,
-      // huge corona when near.
+      const cx = Math.round(px/wCell), cy = Math.round(py/wCell);
       const sunDist = vLength(sunWorld);
       const haloRadius = Math.max(2, Math.min(14, 600 / sunDist));
       for(let dy=-Math.ceil(haloRadius); dy<=Math.ceil(haloRadius); dy++){
@@ -1665,16 +1787,19 @@ function renderFlight(state, theme, dt){
           const d = Math.hypot(dx, dy);
           if(d > haloRadius) continue;
           const gx = cx+dx, gy = cy+dy;
-          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+          if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
           const v = Math.exp(-d / Math.max(1, haloRadius*0.4));
-          const idx = gy*cols+gx;
-          if(v > gSun[idx]) gSun[idx] = v;
+          const idx = gy*wCols+gx;
+          if(v > lSun.grid[idx]){
+            lSun.grid[idx] = v;
+            lSun.chars[idx] = v > 0.85 ? '@' : v > 0.5 ? '*' : '+';
+          }
         }
       }
     }
   }
 
-  // Planet (if in a system) — a disc with surface speckles.
+  /* ---- WORLD: planet (filled disc, sphere-projected, rotating) ---- */
   if(systemBodies){
     const pWorld = [
       systemBodies.planet.pos[0] - state.ship.position[0],
@@ -1685,60 +1810,68 @@ function renderFlight(state, theme, dt){
     if(cam[2] > 0.5){
       const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
       const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-      const cx = Math.round(px/FLIGHT_CELL), cy = Math.round(py/FLIGHT_CELL);
-      const screenRadius = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / FLIGHT_CELL;
-      // Limb circle
-      if(screenRadius > 1){
-        const limbSteps = Math.max(16, screenRadius * 6);
-        for(let i=0;i<limbSteps;i++){
+      const cxc = px / wCell, cyc = py / wCell;
+      const rc = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / wCell;
+      if(rc > 1.5){
+        const driftLng = tSec * 0.18;     // ~35 sec per full rotation
+        for(let gy = Math.floor(cyc - rc - 1); gy <= Math.ceil(cyc + rc + 1); gy++){
+          for(let gx = Math.floor(cxc - rc - 1); gx <= Math.ceil(cxc + rc + 1); gx++){
+            const ddx = gx - cxc, ddy = gy - cyc;
+            const d = Math.hypot(ddx, ddy);
+            if(d > rc) continue;
+            const nx = ddx / rc, ny = ddy / rc;
+            const light = 0.6 * nx - 0.8 * ny;       // upper-right lit
+            const lat = Math.asin(Math.max(-1, Math.min(1, ny)));
+            const cosLat = Math.cos(lat);
+            if(cosLat < 0.04) continue;
+            const lonArg = nx / cosLat;
+            if(Math.abs(lonArg) > 1) continue;
+            const lonVis = Math.asin(lonArg);
+            const lon = lonVis + driftLng;
+            const noise = (Math.sin(lon * 4.5) + Math.cos(lat * 6) + Math.sin((lon - lat) * 3.5)) / 3;
+            const isAccent = noise > 0.18;
+            const edge = Math.min(1, (rc - d) / 1.2);
+            const v = Math.max(0, Math.min(1, 0.45 + light * 0.32 + noise * 0.14)) * edge;
+            if(v < 0.18) continue;
+            if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
+            const hashLon = Math.round(lon * 6);
+            const hashLat = Math.round(lat * 9);
+            const ch = pPick(hashLon, hashLat, 13, FLIGHT_GLYPHS.planetBody);
+            const target = isAccent ? lPlanetAcc : lPlanet;
+            const idx = gy * wCols + gx;
+            if(v > target.grid[idx]){
+              target.grid[idx] = v;
+              target.chars[idx] = ch;
+            }
+          }
+        }
+        // Bright limb edge — silhouette doesn't rotate, only the inside does.
+        const limbSteps = Math.max(48, rc * 8);
+        for(let i=0; i<limbSteps; i++){
           const a = (i / limbSteps) * Math.PI * 2;
-          const gx = Math.round(cx + Math.cos(a) * screenRadius);
-          const gy = Math.round(cy + Math.sin(a) * screenRadius);
-          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+          const gx = Math.round(cxc + Math.cos(a) * rc);
+          const gy = Math.round(cyc + Math.sin(a) * rc);
+          if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
           const lightDot = -Math.cos(a)*0.7 - Math.sin(a)*0.7;
-          const v = 0.55 + lightDot*0.4;
-          const idx = gy*cols+gx;
-          if(v > gPlanet[idx]) gPlanet[idx] = v;
+          const v = 0.7 + lightDot*0.3;
+          const idx = gy*wCols+gx;
+          if(v > lPlanet.grid[idx]){
+            lPlanet.grid[idx] = v;
+            lPlanet.chars[idx] = slopeChar(-Math.sin(a), Math.cos(a));
+          }
         }
-        // Surface speckles. We treat each surface (az, el) point as a
-        // position on the planet's sphere at radius 1, project it, and
-        // only show it if it's on the near side (z > 0 in camera-relative
-        // planet space).
-        for(const sp of systemBodies.planet.surface){
-          // Rotate the surface point to its position in camera space,
-          // ignoring the planet's own rotation for now (could add later).
-          const sx = Math.cos(sp.el) * Math.cos(sp.az);
-          const sy = Math.sin(sp.el);
-          const sz = Math.cos(sp.el) * Math.sin(sp.az);
-          // This point is on the planet's surface; offset by planet center
-          // in camera space, then project. We're approximating: surface
-          // points are added as offsets in camera-aligned axes rather than
-          // a fully oriented sphere, but the visual is close enough for
-          // distant planets.
-          if(sz < 0) continue;       // far side
-          const wx = cam[0] + sx * systemBodies.planet.radius;
-          const wy = cam[1] + sy * systemBodies.planet.radius;
-          const wz = cam[2] + sz * systemBodies.planet.radius * 0.5;
-          if(wz < 0.5) continue;
-          const ppx = (wx * FOV_FLIGHT) / wz + W/2;
-          const ppy = (-wy * FOV_FLIGHT) / wz + H/2;
-          const gx = Math.round(ppx/FLIGHT_CELL), gy = Math.round(ppy/FLIGHT_CELL);
-          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
-          const idx = gy*cols+gx;
-          if(sp.br > gPlanet[idx]) gPlanet[idx] = sp.br;
-        }
-      } else if(screenRadius > 0.3){
-        // Distant planet: just a single bright point.
-        if(cx>=0&&cx<cols&&cy>=0&&cy<rows){
-          gPlanet[cy*cols+cx] = 0.85;
+      } else if(rc > 0.3){
+        // Distant planet — single bright pixel.
+        const cx = Math.round(cxc), cy = Math.round(cyc);
+        if(cx>=0&&cx<wCols&&cy>=0&&cy<wRows){
+          lPlanet.grid[cy*wCols+cx] = 0.85;
+          lPlanet.chars[cy*wCols+cx] = '*';
         }
       }
     }
   }
 
-  // Trade anchor — visual signal that resolves as the ship approaches.
-  // Stage classification is shared with the sim layer (anchorStage); the
-  // per-frame visual treatment lives in drawAnchorStage.
+  /* ---- WORLD: trade anchor ---- */
   if(systemBodies && systemBodies.anchor){
     const aWorld = [
       systemBodies.anchor.position[0] - state.ship.position[0],
@@ -1751,13 +1884,13 @@ function renderFlight(state, theme, dt){
       if(info.stage !== 'silent'){
         const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
         const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-        const acx = Math.round(px/FLIGHT_CELL), acy = Math.round(py/FLIGHT_CELL);
-        drawAnchorStage(gAnchor, acx, acy, cols, rows, info);
+        const acx = Math.round(px/wCell), acy = Math.round(py/wCell);
+        drawAnchorStage(lAnchor.grid, acx, acy, wCols, wRows, info);
       }
     }
   }
 
-  // Dust
+  /* ---- WORLD: dust (small specks, no slashes) ---- */
   for(const d of dust){
     d.pos = [
       d.pos[0] - state.ship.velocity[0]*dt,
@@ -1770,11 +1903,14 @@ function renderFlight(state, theme, dt){
     if(cam[2] < 0.5) continue;
     const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
     const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-    const gx = Math.round(px/FLIGHT_CELL), gy = Math.round(py/FLIGHT_CELL);
-    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const gx = Math.round(px/wCell), gy = Math.round(py/wCell);
+    if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
     const v = Math.max(0.2, Math.min(1, 1 - cam[2]/DUST_RANGE));
-    const idx = gy*cols+gx;
-    if(v > gDust[idx]) gDust[idx] = v;
+    const idx = gy*wCols+gx;
+    if(v > lDust.grid[idx]){
+      lDust.grid[idx] = v;
+      lDust.chars[idx] = pPick(gx, gy, 31, FLIGHT_GLYPHS.dust);
+    }
     if(state.ship.speed > 5){
       const tf = Math.min(1, state.ship.speed/TUNING.maxSpeed);
       const back = [
@@ -1787,56 +1923,286 @@ function renderFlight(state, theme, dt){
         const pxB = (camB[0]*FOV_FLIGHT)/camB[2] + W/2;
         const pyB = (-camB[1]*FOV_FLIGHT)/camB[2] + H/2;
         const dx=pxB-px, dy=pyB-py;
-        const steps = Math.min(10, Math.ceil(Math.hypot(dx,dy)/FLIGHT_CELL));
+        const steps = Math.min(10, Math.ceil(Math.hypot(dx,dy)/wCell));
         for(let s=1;s<=steps;s++){
           const t=s/steps;
-          const sx=Math.round((px+dx*t)/FLIGHT_CELL);
-          const sy=Math.round((py+dy*t)/FLIGHT_CELL);
-          if(sx<0||sx>=cols||sy<0||sy>=rows) continue;
+          const sx=Math.round((px+dx*t)/wCell);
+          const sy=Math.round((py+dy*t)/wCell);
+          if(sx<0||sx>=wCols||sy<0||sy>=wRows) continue;
           const fade = v * (1 - t*0.7);
-          const idx2 = sy*cols+sx;
-          if(fade > gDust[idx2]) gDust[idx2] = fade;
+          const idx2 = sy*wCols+sx;
+          if(fade > lDust.grid[idx2]){
+            lDust.grid[idx2] = fade;
+            lDust.chars[idx2] = pPick(sx, sy, 33, FLIGHT_GLYPHS.dust);
+          }
         }
       }
     }
   }
 
-  // Cockpit frame + crosshair
-  const inset=14, slant=W*0.06, dashTop=H-80;
-  function plotLine(x1,y1,x2,y2,brightness){
-    const a=x1/FLIGHT_CELL, bb=y1/FLIGHT_CELL, c=x2/FLIGHT_CELL, dd=y2/FLIGHT_CELL;
-    const steps = Math.max(2, Math.ceil(Math.hypot(c-a, dd-bb)));
-    for(let i=0;i<=steps;i++){
-      const t=i/steps;
-      const gx=Math.round(a+(c-a)*t), gy=Math.round(bb+(dd-bb)*t);
-      if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
-      const idx=gy*cols+gx;
-      if(brightness > gFrame[idx]) gFrame[idx]=brightness;
+  /* ============================================================
+     INSTRUMENTS — fine-cell layers
+     ============================================================ */
+  function instSet(layer, gx, gy, v, ch){
+    if(gx<0||gx>=layer.cols||gy<0||gy>=layer.rows) return;
+    const idx = gy*layer.cols+gx;
+    if(v > layer.grid[idx]){
+      layer.grid[idx] = v;
+      if(ch) layer.chars[idx] = ch;
     }
   }
-  plotLine(inset, inset, W-inset, inset, 0.7);
-  plotLine(inset, inset, inset+slant, dashTop, 0.7);
-  plotLine(W-inset, inset, W-inset-slant, dashTop, 0.7);
-  plotLine(inset+slant, dashTop, W-inset-slant, dashTop, 0.85);
+  function instLine(layer, x1, y1, x2, y2, brightness, chSpec){
+    const dxL = x2 - x1, dyL = y2 - y1;
+    const steps = Math.max(2, Math.ceil(Math.hypot(dxL, dyL) * 1.4));
+    for(let i=0; i<=steps; i++){
+      const t = i/steps;
+      const gx = Math.round(x1 + dxL*t), gy = Math.round(y1 + dyL*t);
+      let ch = null;
+      if(typeof chSpec === 'function') ch = chSpec(gx, gy, dxL, dyL);
+      else if(typeof chSpec === 'string') ch = chSpec;
+      instSet(layer, gx, gy, brightness, ch);
+    }
+  }
 
-  const ccx = (W/2)/FLIGHT_CELL, ccy = (H*0.42)/FLIGHT_CELL;
-  const arm=2.0, gap=0.6;
-  plotLine((ccx-arm-gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, (ccx-gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, 0.95);
-  plotLine((ccx+gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, (ccx+arm+gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, 0.95);
-  plotLine(ccx*FLIGHT_CELL, (ccy-arm-gap)*FLIGHT_CELL, ccx*FLIGHT_CELL, (ccy-gap)*FLIGHT_CELL, 0.95);
-  plotLine(ccx*FLIGHT_CELL, (ccy+gap)*FLIGHT_CELL, ccx*FLIGHT_CELL, (ccy+arm+gap)*FLIGHT_CELL, 0.95);
+  /* ---- INSTRUMENT: cockpit frame (trapezoidal canopy + corners) ---- */
+  const inset = 12;
+  const dashTopY = H * 0.72;
+  const tlx = inset, tly = inset;
+  const trx = W - inset, try_ = inset;
+  const blx = inset + W * 0.10, bly = dashTopY;
+  const brx = W - inset - W * 0.10, bry = dashTopY;
+  instLine(lFrame, tlx/iCell, tly/iCell, trx/iCell, try_/iCell, 0.7, '─');
+  instLine(lFrame, tlx/iCell, tly/iCell, blx/iCell, bly/iCell, 0.7,
+           (gx, gy, dx, dy) => slopeChar(dx, dy));
+  instLine(lFrame, trx/iCell, try_/iCell, brx/iCell, bry/iCell, 0.7,
+           (gx, gy, dx, dy) => slopeChar(dx, dy));
+  instSet(lFrame, Math.round(tlx/iCell), Math.round(tly/iCell), 0.95, '┌');
+  instSet(lFrame, Math.round(trx/iCell), Math.round(try_/iCell), 0.95, '┐');
+  instSet(lFrame, Math.round(blx/iCell), Math.round(bly/iCell), 0.85, '└');
+  instSet(lFrame, Math.round(brx/iCell), Math.round(bry/iCell), 0.85, '┘');
 
-  const layers=[
-    { name:'stars',  grid:gStars,  color:resolveColor(theme.hues.system) },
-    { name:'sun',    grid:gSun,    color:resolveColor(theme.hues.warn) },
-    { name:'planet', grid:gPlanet, color:resolveColor(theme.hues.planet) },
-    { name:'anchor', grid:gAnchor, color:resolveColor(theme.hues.selected) },
-    { name:'dust',   grid:gDust,   color:resolveColor(theme.hues.dust) },
-    { name:'frame',  grid:gFrame,  color:resolveColor(theme.hues.frame) },
+  /* ---- INSTRUMENT: concentric reticle ---- */
+  const ccx = (W/2)/iCell, ccy = (H*0.42)/iCell;
+  instSet(lFrame, Math.round(ccx), Math.round(ccy), 0.55, '·');
+  for(let a=0; a<Math.PI*2; a += Math.PI/8){
+    const px = ccx + Math.cos(a) * 2;
+    const py = ccy + Math.sin(a) * 2;
+    instSet(lFrame, Math.round(px), Math.round(py), 0.85, slopeChar(-Math.sin(a), Math.cos(a)));
+  }
+  for(let a=0; a<Math.PI*2; a += Math.PI/12){
+    const px = ccx + Math.cos(a) * 4;
+    const py = ccy + Math.sin(a) * 4;
+    instSet(lFrame, Math.round(px), Math.round(py), 0.7, slopeChar(-Math.sin(a), Math.cos(a)));
+  }
+  instSet(lFrame, Math.round(ccx + 5), Math.round(ccy),     0.95, '─');
+  instSet(lFrame, Math.round(ccx - 5), Math.round(ccy),     0.95, '─');
+  instSet(lFrame, Math.round(ccx),     Math.round(ccy + 5), 0.95, '│');
+  instSet(lFrame, Math.round(ccx),     Math.round(ccy - 5), 0.95, '│');
+
+  /* ---- INSTRUMENT: compass chevron ----
+     A small indicator near the top-center of the cockpit pointing toward
+     the chart-selected target. Hidden if there's no target. */
+  const cur = state.currentSystemSeed ? findSystemBySeed(state.galaxies, state.currentSystemSeed) : null;
+  const tgt = state.selectedSystemSeed ? findSystemBySeed(state.galaxies, state.selectedSystemSeed) : null;
+  const compassAngle = compass(cur, tgt);
+  if(compassAngle !== null){
+    // Place the compass dial at the top center of the canopy, between the
+    // top frame edge and the reticle.
+    const cmpCx = (W / 2) / iCell;
+    const cmpCy = (H * 0.13) / iCell;
+    // Outer ring
+    for(let a=0; a<Math.PI*2; a += Math.PI/12){
+      const px = cmpCx + Math.cos(a) * 3;
+      const py = cmpCy + Math.sin(a) * 3;
+      instSet(lFrame, Math.round(px), Math.round(py), 0.55, slopeChar(-Math.sin(a), Math.cos(a)));
+    }
+    // Bearing pointer — chevron rotated to compassAngle. Chart Y grows
+    // downward, so flip sign for screen-space. Forward (north) of bearing
+    // gets the brightest mark.
+    const bearingX = cmpCx + Math.cos(compassAngle) * 2.2;
+    const bearingY = cmpCy + Math.sin(compassAngle) * 2.2;
+    const aDeg = Math.atan2(Math.sin(compassAngle), Math.cos(compassAngle));
+    const tipCh = (() => {
+      // Pick a directional glyph from the bearing
+      const a = aDeg;
+      if(Math.abs(a) < Math.PI/8) return '►';
+      if(a >  Math.PI*7/8 || a < -Math.PI*7/8) return '◄';
+      if(a >  Math.PI/8 && a <  Math.PI*3/8) return '◢';
+      if(a >  Math.PI*3/8 && a <  Math.PI*5/8) return '▼';
+      if(a >  Math.PI*5/8 && a <  Math.PI*7/8) return '◣';
+      if(a < -Math.PI/8 && a > -Math.PI*3/8) return '◥';
+      if(a < -Math.PI*3/8 && a > -Math.PI*5/8) return '▲';
+      return '◤';
+    })();
+    instSet(lFrame, Math.round(bearingX), Math.round(bearingY), 0.95, tipCh);
+    instSet(lFrame, Math.round(cmpCx), Math.round(cmpCy), 0.65, '·');
+  }
+
+  /* ---- INSTRUMENT: mass-lock indicator ----
+     Small marker at top-left of the cockpit that lights up amber when the
+     ship is too close to a massive body to hyperspace out. */
+  if(systemBodies){
+    const bodies = [systemBodies.planet.pos, systemBodies.sun.pos];
+    if(isMassLocked(state.ship.position, bodies)){
+      const mlx = (W * 0.04) / iCell;
+      const mly = (H * 0.08) / iCell;
+      // A bracketed "ML" marker
+      instSet(lDash, Math.round(mlx),     Math.round(mly), 0.95, '[');
+      instSet(lDash, Math.round(mlx) + 1, Math.round(mly), 0.95, 'M');
+      instSet(lDash, Math.round(mlx) + 2, Math.round(mly), 0.95, 'L');
+      instSet(lDash, Math.round(mlx) + 3, Math.round(mly), 0.95, ']');
+    }
+  }
+
+  /* ---- INSTRUMENT: dashboard (scanner + holo-disks + mini-bars) ---- */
+  const dashH = H - 8 - dashTopY;
+  const rcx = W * 0.5, rcy = dashTopY + dashH * 0.55;
+  const rw = W * 0.13, rh = dashH * 0.32;
+  const diskR = dashH * 0.34;
+
+  // Top dashboard rule
+  instLine(lDash, (W*0.05)/iCell, dashTopY/iCell, (W - W*0.05)/iCell, dashTopY/iCell, 0.85,
+           (gx, gy) => pPick(gx, gy, 101, ['─','═','=','─']));
+
+  // Scanner ellipse — outer
+  let prev = null;
+  for(let a=0; a<=Math.PI*2 + 0.05; a+=0.05){
+    const x = rcx + Math.cos(a) * rw;
+    const y = rcy + Math.sin(a) * rh;
+    if(prev) instLine(lDash, prev[0]/iCell, prev[1]/iCell, x/iCell, y/iCell, 0.85,
+                     (gx, gy, dx, dy) => slopeChar(dx, dy));
+    prev = [x, y];
+  }
+  // Scanner ellipse — inner
+  prev = null;
+  for(let a=0; a<=Math.PI*2 + 0.05; a+=0.06){
+    const x = rcx + Math.cos(a) * rw * 0.55;
+    const y = rcy + Math.sin(a) * rh * 0.55;
+    if(prev) instLine(lDash, prev[0]/iCell, prev[1]/iCell, x/iCell, y/iCell, 0.55,
+                     (gx, gy, dx, dy) => slopeChar(dx, dy));
+    prev = [x, y];
+  }
+  instLine(lDash, (rcx-rw)/iCell, rcy/iCell, (rcx+rw)/iCell, rcy/iCell, 0.5, '─');
+
+  // Radar sweep — fading 7-segment trail
+  const sweepAngle = tSec * 0.55;
+  for(let i=0; i<7; i++){
+    const a = sweepAngle - i*0.07;
+    const ex = rcx + Math.cos(a) * rw;
+    const ey = rcy + Math.sin(a) * rh;
+    const v = Math.max(0, 0.95 - i*0.13);
+    if(v < 0.1) continue;
+    instLine(lDash, rcx/iCell, rcy/iCell, ex/iCell, ey/iCell, v,
+             (gx, gy, dx, dy) => slopeChar(dx, dy));
+  }
+
+  // Left holo-disk (TARGET, amber)
+  const tdcx = rcx - rw - W * 0.06 - diskR;
+  const tdcy = rcy;
+  prev = null;
+  for(let a=0; a<=Math.PI*2 + 0.05; a+=0.04){
+    const x = tdcx + Math.cos(a) * diskR;
+    const y = tdcy + Math.sin(a) * diskR;
+    if(prev) instLine(lDash, prev[0]/iCell, prev[1]/iCell, x/iCell, y/iCell, 0.8,
+                     (gx, gy, dx, dy) => slopeChar(dx, dy));
+    prev = [x, y];
+  }
+  instLine(lDash, (tdcx - diskR)/iCell, tdcy/iCell, (tdcx + diskR)/iCell, tdcy/iCell, 0.45, '─');
+  instLine(lDash, tdcx/iCell, (tdcy - diskR)/iCell, tdcx/iCell, (tdcy + diskR)/iCell, 0.45, '│');
+  instSet(lDash, Math.round((tdcx + diskR*1.15)/iCell), Math.round(tdcy/iCell), 0.95, '─');
+  instSet(lDash, Math.round((tdcx - diskR*1.15)/iCell), Math.round(tdcy/iCell), 0.95, '─');
+  instSet(lDash, Math.round(tdcx/iCell), Math.round((tdcy + diskR*1.15)/iCell), 0.95, '│');
+  instSet(lDash, Math.round(tdcx/iCell), Math.round((tdcy - diskR*1.15)/iCell), 0.95, '│');
+  const pulse = 0.7 + 0.3 * Math.sin(tSec * 4);
+  instSet(lDash, Math.round(tdcx/iCell), Math.round(tdcy/iCell),     pulse,       '◆');
+  instSet(lDash, Math.round(tdcx/iCell)+2, Math.round(tdcy/iCell),   pulse*0.7,   '┤');
+  instSet(lDash, Math.round(tdcx/iCell)-2, Math.round(tdcy/iCell),   pulse*0.7,   '├');
+  instSet(lDash, Math.round(tdcx/iCell), Math.round(tdcy/iCell)-2,   pulse*0.7,   '┴');
+  instSet(lDash, Math.round(tdcx/iCell), Math.round(tdcy/iCell)+2,   pulse*0.7,   '┬');
+
+  // Right holo-disk (SYSTEMS, cyan) — three concentric arcs (cosmetic for now).
+  const sdcx = rcx + rw + W * 0.06 + diskR;
+  const sdcy = rcy;
+  prev = null;
+  for(let a=0; a<=Math.PI*2 + 0.05; a+=0.04){
+    const x = sdcx + Math.cos(a) * diskR;
+    const y = sdcy + Math.sin(a) * diskR;
+    if(prev) instLine(lStatus, prev[0]/iCell, prev[1]/iCell, x/iCell, y/iCell, 0.8,
+                     (gx, gy, dx, dy) => slopeChar(dx, dy));
+    prev = [x, y];
+  }
+  instSet(lStatus, Math.round((sdcx + diskR*1.15)/iCell), Math.round(sdcy/iCell), 0.95, '─');
+  instSet(lStatus, Math.round((sdcx - diskR*1.15)/iCell), Math.round(sdcy/iCell), 0.95, '─');
+  instSet(lStatus, Math.round(sdcx/iCell), Math.round((sdcy + diskR*1.15)/iCell), 0.95, '│');
+  instSet(lStatus, Math.round(sdcx/iCell), Math.round((sdcy - diskR*1.15)/iCell), 0.95, '│');
+  // Stable defaults for what v0.2 combat will fill in (hull, shields).
+  // Fuel is real now: from game state, drains on each hyperspace jump.
+  const hullPct = 1.0;
+  const shieldPct = 1.0;
+  const fuelPct = Math.max(0, Math.min(1, (state.fuel ?? FUEL_MAX_LY) / FUEL_MAX_LY));
+  function drawArc(layer, cx, cy, r, fillFrac, brightness){
+    const start = -Math.PI/2;
+    const end = start + Math.max(0, Math.min(1, fillFrac)) * Math.PI * 2;
+    let p = null;
+    for(let a=start; a<=end; a+=0.04){
+      const x = cx + Math.cos(a)*r, y = cy + Math.sin(a)*r;
+      if(p) instLine(layer, p[0]/iCell, p[1]/iCell, x/iCell, y/iCell, brightness,
+                    (gx, gy, dx, dy) => slopeChar(dx, dy));
+      p = [x, y];
+    }
+    const ex = cx + Math.cos(end)*r, ey = cy + Math.sin(end)*r;
+    instSet(layer, Math.round(ex/iCell), Math.round(ey/iCell), 1.0, '●');
+  }
+  drawArc(lStatus, sdcx, sdcy, diskR*0.85, hullPct,   0.95);
+  drawArc(lStatus, sdcx, sdcy, diskR*0.62, shieldPct, 0.85);
+  drawArc(lStatus, sdcx, sdcy, diskR*0.40, fuelPct,   0.75);
+
+  // Mini-bars below scanner: SPD (real throttle) / ENG / HEAT (cosmetic).
+  const barY = rcy + rh + 4;
+  const barW = 78, barH = 8, barGap = 14;
+  const totalBarW = 3*barW + 2*barGap;
+  const barLeftX = rcx - totalBarW/2;
+  const speedPct  = Math.max(0, Math.min(1, state.ship.throttle));
+  const energyPct = 1.0;     // cosmetic — full until v0.2 capacitor model
+  // HEAT is cabin temperature now: rises near the local sun.
+  const heatPct   = systemBodies
+    ? cabinHeat(state.ship.position, systemBodies.sun.pos)
+    : 0;
+  const miniBars = [
+    { val: speedPct,  x: barLeftX },
+    { val: energyPct, x: barLeftX + barW + barGap },
+    { val: heatPct,   x: barLeftX + 2*(barW + barGap) },
   ];
-  renderLayers(layers, FLIGHT_CELL, cols, rows, W, H);
+  for(const b of miniBars){
+    instLine(lDash, b.x/iCell, barY/iCell, (b.x+barW)/iCell, barY/iCell, 0.55, '─');
+    instLine(lDash, b.x/iCell, (barY+barH)/iCell, (b.x+barW)/iCell, (barY+barH)/iCell, 0.55, '─');
+    const fillW = barW * Math.max(0, Math.min(1, b.val));
+    const fillCh = blockChar(b.val);
+    instLine(lDash, b.x/iCell, (barY+barH/2)/iCell, (b.x+fillW)/iCell, (barY+barH/2)/iCell, 0.95, fillCh);
+  }
 
-  // HUD readouts
+  /* ============================================================
+     COMPOSITE — world first, then mask, then instruments on top.
+     ============================================================ */
+  renderLayers([lStars, lSun, lPlanet, lPlanetAcc, lAnchor, lDust], wCell, wCols, wRows, W, H);
+
+  // Cockpit mask: fill outside-the-canopy with solid black so the
+  // instruments aren't fighting bright world content for legibility.
+  ctx.save();
+  ctx.fillStyle = 'rgba(2, 3, 10, 1)';
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.moveTo(inset, inset);
+  ctx.lineTo(W - inset, inset);
+  ctx.lineTo(W - inset - W * 0.10, dashTopY);
+  ctx.lineTo(inset + W * 0.10, dashTopY);
+  ctx.closePath();
+  ctx.fill('evenodd');
+  ctx.restore();
+
+  renderLayers([lFrame, lDash, lStatus], iCell, iCols, iRows, W, H);
+
+  /* ---- HUD readouts (HTML elements, unchanged) ---- */
   document.getElementById('hSpeed').textContent = state.ship.speed.toFixed(1);
   document.getElementById('hThr').textContent = `${Math.round(state.ship.throttle*100)}%`;
   const sysName = state.currentSystemSeed
@@ -2106,6 +2472,7 @@ let game = {
   selectedSystemSeed: null,
   ship: INITIAL_SHIP,
   hyperspaceT: 0,
+  fuel: FUEL_MAX_LY,        // refilled at stations later; resets on reload for now
   themeId: loadSavedThemeId(),
 };
 
