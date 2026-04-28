@@ -510,21 +510,21 @@
     const lDash      = makeLayer('dash',      'inst',  'dash',   iCell, W, H);
 
     /* ============================================================
-       1. BACKGROUND ATMOSPHERE — proposed mode only
-       Dense low-brightness letter field tiling the whole screen,
-       per-cell deterministic so it doesn't strobe.
+       1. BACKGROUND ATMOSPHERE — DISABLED for space scenes.
+
+       Effulgence's dense letter backgrounds belong to *environments*
+       — Sea of Electrolysis, Highway, Fiber Forest — places the
+       player is physically inside. Open space is the opposite: vast
+       and empty, with stars and dust as the only texture. Filling
+       it with `g+&` glyphs reads as "you're trapped in a text wall,"
+       not "you're in space."
+
+       This layer stays in the code for future environment scenes
+       (station interiors, planetary surfaces, asteroid fields)
+       where a textured background is the right call. For the
+       cockpit-in-space mockup, leave it empty.
        ============================================================ */
-    if (state.style === 'proposed') {
-      for (let gy = 0; gy < lBg.rows; gy++) {
-        for (let gx = 0; gx < lBg.cols; gx++) {
-          const r = pHash(gx, gy, 1);
-          if (r > 0.42) continue;        // ~58% empty for breathing room
-          const ch = pPick(gx, gy, 7, G.bg);
-          const v = 0.13 + r * 0.18;     // 0.13..0.29 — readable but never dominant
-          setCell(lBg, gx, gy, v, ch);
-        }
-      }
-    }
+    // (intentionally blank in this scene)
 
     /* ============================================================
        2. PLANET — filled disc with surface texture (proposed) or
