@@ -147,12 +147,20 @@
     gap: 3px;
   }
   #theme-picker .swatch {
-    width: 14px; height: 14px;
+    width: 16px; height: 16px;
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.15);
     cursor: pointer;
     transition: transform 0.1s, border-color 0.15s;
     position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    font-size: 9px;
+    font-weight: 700;
+    color: rgba(0, 0, 0, 0.65);
+    text-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
   }
   #theme-picker .swatch:hover {
     transform: scale(1.15);
@@ -512,6 +520,7 @@ function renderSwatches() {
     const sw = document.createElement('div');
     sw.className = 'swatch' + (t.id === state.themeId ? ' on' : '');
     sw.dataset.name = t.name;
+    sw.textContent = t.name.charAt(0);
     // Show the theme's accent color in the swatch.
     const sc = resolveColor(t.hues.accent);
     sw.style.background = `hsl(${sc.h}, ${sc.s}%, ${sc.l}%)`;
