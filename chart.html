@@ -127,7 +127,7 @@
 
   <div id="title">
     APHELION
-    <div class="sub">GALACTIC CHART · GALAXY <span id="galaxyNum">1</span></div>
+    <div class="sub">GALACTIC CHART · <span id="galaxyName">—</span> · GALAXY <span id="galaxyNum">1</span> OF 8</div>
   </div>
 
   <div id="galaxy-tabs"></div>
@@ -162,6 +162,15 @@ const SYLLABLES = [
   'XO', 'VE', 'RI', 'KA', 'ME', 'TU', 'ZA', 'GE',
   'NO', 'LA', 'CE', 'PI', 'SO', 'DA', 'BE', 'HE',
 ];
+const GALAXY_PREFIXES = [
+  'Sol', 'Ves', 'Aur', 'Lyr', 'Mer', 'Cal', 'Hes', 'Dor',
+  'Per', 'Ari', 'Cor', 'Eos', 'Lum', 'Tha', 'Nym', 'Ele',
+];
+const GALAXY_MIDDLES = [
+  'an', 'er', 'ad', 'om', 'al', 'in', 'es', 'on',
+  'ar', 'el', 'ir', 'us', 'ol', 'iv', 'um', 'as',
+];
+const GALAXY_SUFFIXES = ['ia', 'us', 'on', 'is', 'ae', 'or', 'um', 'ix'];
 const ECONOMIES = [
   'Rich Industrial', 'Average Industrial', 'Poor Industrial', 'Mainly Industrial',
   'Mainly Agricultural', 'Rich Agricultural', 'Average Agricultural', 'Poor Agricultural',
@@ -197,6 +206,17 @@ function nameFromSeed([s0, s1, s2]) {
   let name = '';
   for (let i = 0; i < count; i++) name += SYLLABLES[idx[i]];
   return name.charAt(0) + name.slice(1).toLowerCase();
+}
+
+function galaxyNameFromSeed([s0, s1, s2]) {
+  const prefixIdx = (s1 >> 4) & 0xf;
+  const middleIdx = (s2 >> 4) & 0xf;
+  const suffixIdx = s2 & 0x7;
+  const useMiddle = (s0 & 0x4) !== 0;
+  let name = GALAXY_PREFIXES[prefixIdx];
+  if (useMiddle) name += GALAXY_MIDDLES[middleIdx];
+  name += GALAXY_SUFFIXES[suffixIdx];
+  return name;
 }
 
 function systemFromSeed(seed, index) {
@@ -238,7 +258,7 @@ function generateGalaxy(startSeed) {
     cur = twistOnce(cur);
     systems.push(systemFromSeed(cur, i));
   }
-  return systems;
+  return { name: galaxyNameFromSeed(startSeed), systems };
 }
 
 function generateAllGalaxies() {
@@ -328,6 +348,7 @@ const tabs = document.getElementById('galaxy-tabs');
 for (let i = 0; i < 8; i++) {
   const b = document.createElement('button');
   b.textContent = (i + 1).toString();
+  b.title = state.galaxies[i].name;     // hover shows the name
   if (i === 0) b.classList.add('on');
   b.addEventListener('click', () => setGalaxy(i));
   tabs.appendChild(b);
@@ -338,7 +359,11 @@ function setGalaxy(idx) {
     b.classList.toggle('on', i === idx);
   });
   document.getElementById('galaxyNum').textContent = (idx + 1).toString();
+  document.getElementById('galaxyName').textContent = state.galaxies[idx].name.toUpperCase();
 }
+
+// initialize the title to show galaxy 1's name
+setGalaxy(0);
 
 /* ---- offscreen color buckets for clean per-color bloom ---- */
 const buckets = {};
@@ -360,7 +385,7 @@ const ramp = " .·:-=+*#%@█";
 
 /* ---- nearest-system lookup ---- */
 function nearestSystem(cx, cy) {
-  const systems = state.galaxies[state.galaxyIdx];
+  const systems = state.galaxies[state.galaxyIdx].systems;
   let best = null, bestD = Infinity;
   for (const s of systems) {
     const dx = s.x - cx, dy = s.y - cy;
@@ -419,7 +444,7 @@ function frame(now) {
   state.selected = nearest;
 
   /* --- plot all systems --- */
-  const systems = state.galaxies[state.galaxyIdx];
+  const systems = state.galaxies[state.galaxyIdx].systems;
   for (const sys of systems) {
     const [sx, sy] = chartToScreen(sys.x, sys.y);
     const gx = Math.round(sx / cell);

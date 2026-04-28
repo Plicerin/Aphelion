@@ -23,7 +23,7 @@ import {
   twistN,
   twistOnce,
 } from '../src/galaxy/twist';
-import { nameFromSeed } from '../src/galaxy/names';
+import { galaxyNameFromSeed, nameFromSeed } from '../src/galaxy/names';
 
 describe('twist', () => {
   it('is deterministic', () => {
@@ -166,5 +166,36 @@ describe('name generation', () => {
     }
     // Should see at least 3 different lengths in 100 samples.
     expect(lengths.size).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('galaxy naming', () => {
+  it('every galaxy has a name', () => {
+    const galaxies = generateAllGalaxies();
+    for (const g of galaxies) {
+      expect(g.name).toBeTruthy();
+      expect(g.name.length).toBeGreaterThan(2);
+    }
+  });
+
+  it('all 8 galaxy names are unique', () => {
+    const galaxies = generateAllGalaxies();
+    const names = new Set(galaxies.map((g) => g.name));
+    expect(names.size).toBe(8);
+  });
+
+  it('galaxy names are deterministic', () => {
+    expect(galaxyNameFromSeed(APHELION_SEED)).toBe(
+      galaxyNameFromSeed(APHELION_SEED),
+    );
+  });
+
+  it('galaxy names look like proper nouns', () => {
+    const galaxies = generateAllGalaxies();
+    for (const g of galaxies) {
+      // Starts with capital, rest lowercase letters only
+      expect(g.name).toMatch(/^[A-Z][a-z]+$/);
+      expect(g.name.length).toBeLessThanOrEqual(12);
+    }
   });
 });

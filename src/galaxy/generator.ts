@@ -16,7 +16,7 @@
 
 import type { Economy, Galaxy, Government, SeedTriple, System } from '../types';
 import { APHELION_SEED, rotateGalaxy, twistOnce } from './twist';
-import { nameFromSeed } from './names';
+import { galaxyNameFromSeed, nameFromSeed } from './names';
 
 const ECONOMIES: readonly Economy[] = [
   'rich-industrial',
@@ -117,7 +117,11 @@ export function generateGalaxy(startSeed: SeedTriple, galaxyIndex = 0): Galaxy {
     cur = twistOnce(cur);
     systems.push(systemFromSeed(cur, i));
   }
-  return { index: galaxyIndex, systems };
+  return {
+    index: galaxyIndex,
+    name: galaxyNameFromSeed(startSeed),
+    systems,
+  };
 }
 
 /**

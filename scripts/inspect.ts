@@ -41,5 +41,5 @@ const allG = generateAllGalaxies();
 console.log(`\nAll galaxies: ${allG.length}`);
 for (let i = 0; i < allG.length; i++) {
   const first3 = allG[i]!.systems.slice(0, 3).map((s) => s.name).join(', ');
-  console.log(`  Galaxy ${i}: ${first3}, ...`);
+  console.log(`  Galaxy ${i + 1} ${allG[i]!.name.padEnd(12)} — ${first3}, ...`);
 }

@@ -76,5 +76,6 @@ export type SeedTriple = readonly [number, number, number];
 /** A whole galaxy of 256 systems, fully generated from one starting seed. */
 export interface Galaxy {
   readonly index: number; // 0..7
+  readonly name: string;  // procedural — e.g. "Solanae", "Vesperia"
   readonly systems: readonly System[];
 }
