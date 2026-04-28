@@ -3,6 +3,7 @@
  * (or compile and node-run; this is dev-only)
  */
 import { defaultGalaxy, generateAllGalaxies } from '../src/galaxy/generator';
+import { describeSystem } from '../src/galaxy/describe';
 
 const g = defaultGalaxy();
 
@@ -18,6 +19,12 @@ for (const s of g.systems.slice(0, 12)) {
       `${s.economy.padEnd(22)} ${s.government.padEnd(18)} ` +
       `pop=${s.population.toFixed(1)}B`,
   );
+}
+
+console.log('\n--- Sample descriptions ---');
+for (const s of g.systems.slice(0, 12)) {
+  console.log(`\n${s.name}:`);
+  console.log(`  ${describeSystem(s)}`);
 }
 
 // Distribution sanity checks

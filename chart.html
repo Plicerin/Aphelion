@@ -81,6 +81,16 @@
   #info .lbl { color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
   #info .v { color: var(--ink); font-variant-numeric: tabular-nums; }
   #info .v.warn { color: var(--warn); }
+  #info .description {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    color: var(--ink);
+    font-size: 11px;
+    line-height: 1.55;
+    font-style: italic;
+    opacity: 0.92;
+  }
 
   #legend {
     position: fixed;
@@ -228,6 +238,7 @@
     <div class="row"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
     <div class="row"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
     <div class="row"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
+    <div class="description" id="sysDesc">—</div>
   </div>
 
   <div id="legend">MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY</div>
@@ -405,6 +416,107 @@ function generateAllGalaxies() {
   for (let g = 0; g < 8; g++) {
     out.push(generateGalaxy(seed));
     seed = rotateGalaxy(seed);
+  }
+  return out;
+}
+
+/* ---- description generator (mirror of src/galaxy/describe.ts) ----
+   Recursive grammar driven by a per-system PRNG. Same system always
+   produces the same description because the PRNG is seeded by the
+   system's seed triple.                                                */
+const DESC = {
+  pleasant: ['fabled','remarkable','renowned','celebrated','unusual','curious',
+             'splendid','storied','beguiling','idyllic','breathtaking','serene'],
+  grim: ['forsaken','troubled','unforgiving','inhospitable','sweltering',
+         'frigid','plague-ridden','lawless','restless','crumbling'],
+  neutral: ['peculiar','unconventional','odd','sleepy','quiet','ordinary',
+            'unassuming','modest','small','sprawling'],
+  features: ['oceans','mountains','deserts','glaciers','crystal forests',
+             'singing caves','salt plains','lava tubes','mist gardens',
+             'iron jungles','amber lakes','wind valleys'],
+  cultural: ['three suns','twin moons','rings of dust','low gravity','long winters',
+             'unusual tides','permanent twilight','extraordinary storms'],
+  products: ['cuisine','wines','tea','spices','silks','glasswork','pottery',
+             'poetry','mathematics','shipwrights','clockmakers','tailors'],
+  grimCrafts: ['mercenaries','smugglers','forgers','pirates','tax collectors',
+               'bureaucrats','lawyers','inspectors'],
+  creatures: ['beetles','fish','birds','lizards','crabs','wolves','cats',
+              'rabbits','jellyfish','turtles'],
+  cQual: ['venomous','enormous','invisible','singing','philosophical',
+          'territorial','short-tempered','remarkably patient','extremely small',
+          'mildly poisonous'],
+  absurd: ['its inhabitants greet each other by reciting prime numbers',
+           'tourists are required to register their dreams on arrival',
+           'the official language has no past tense',
+           'all music is performed underwater',
+           'the planetary clock runs backwards on Tuesdays',
+           'every meal is preceded by a thirty-minute apology',
+           'the local currency is a kind of cheese',
+           'no two clouds are alike, by law',
+           'public speaking is illegal between sunset and midnight',
+           'the mail is delivered exclusively by trained crows'],
+  hazards: ['the local ground crews','the orbital traffic','the ash storms',
+            'the customs officers','the unpredictable suns','the corporate police',
+            'the wild moons'],
+  famousFor: ['famous for','renowned for','best known for','celebrated for',
+              'notorious for','occasionally remembered for'],
+  homeTo: ['home to','the birthplace of','where you can find','the only place with'],
+};
+
+function makeDescRng(seed) {
+  let state = (seed[0] ^ (seed[1] << 8) ^ (seed[2] << 16) ^ (seed[0] << 24)) >>> 0;
+  for (let i = 0; i < 4; i++) state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+  return {
+    next() { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state; },
+    pick(arr) { return arr[this.next() % arr.length]; },
+    chance(p) { return (this.next() & 0xffff) / 0x10000 < p; },
+  };
+}
+
+function adjPool(sys) {
+  const wealthy = sys.economy.startsWith('Rich') || sys.economy.startsWith('Average');
+  const stable = sys.government === 'Democracy' || sys.government === 'Corporate State' || sys.government === 'Confederacy';
+  const dangerous = sys.government === 'Anarchy' || sys.government === 'Feudal' ||
+    sys.economy === 'Poor Industrial' || sys.economy === 'Poor Agricultural';
+  if (dangerous) return DESC.grim;
+  if (wealthy && stable) return DESC.pleasant;
+  return DESC.neutral;
+}
+function craftPool(sys) {
+  return (sys.government === 'Anarchy' || sys.government === 'Feudal') ? DESC.grimCrafts : DESC.products;
+}
+function inhabitants(name, rng) {
+  const last = name[name.length - 1].toLowerCase();
+  const isVowel = 'aeiou'.includes(last);
+  const sfx = isVowel ? ['ans','ites','ese','ari'] : ['ans','ites','ians','oids'];
+  return name + rng.pick(sfx);
+}
+
+function describeSystem(sys) {
+  const r = makeDescRng(sys.seed);
+  const adj = r.pick(adjPool(sys));
+  const a = /^[aeiou]/i.test(adj) ? 'an' : 'a';
+  const t1 = [
+    () => `${sys.name} is ${a} ${adj} world ${r.pick(DESC.famousFor)} its ${r.pick(DESC.features)}.`,
+    () => `${sys.name} is ${r.pick(DESC.famousFor)} its ${r.pick(DESC.features)} and its ${r.pick(DESC.cultural)}.`,
+    () => `${sys.name} is ${a} ${adj} place — ${r.pick(DESC.homeTo)} the galaxy's most ${r.pick(DESC.cQual)} ${r.pick(DESC.creatures)}.`,
+    () => `${sys.name} is ${r.pick(DESC.famousFor)} its ${r.pick(craftPool(sys))} and ${r.pick(craftPool(sys))}.`,
+  ];
+  let out = r.pick(t1)();
+
+  if (r.chance(0.66)) {
+    const who = inhabitants(sys.name, r);
+    const t2weighted = [
+      [3, () => `The ${who} are ${r.pick(DESC.famousFor)} their ${r.pick(craftPool(sys))}.`],
+      [2, () => `Visitors are advised to beware of ${r.pick(DESC.hazards)}, but the ${who} are friendly enough.`],
+      [3, () => `It is said that ${r.pick(DESC.absurd)}.`],
+      [2, () => `The ${who} have a peculiar fondness for ${r.pick(DESC.creatures)}.`],
+      [1, () => `The ${who} prefer not to discuss it.`],
+      [2, () => `The ${who} are ${r.pick(DESC.famousFor)} their ${r.pick(DESC.cQual)} ${r.pick(DESC.creatures)}.`],
+    ];
+    const pool = [];
+    for (const [w, fn] of t2weighted) for (let i = 0; i < w; i++) pool.push(fn);
+    out += ' ' + r.pick(pool)();
   }
   return out;
 }
@@ -814,6 +926,7 @@ function frame(now) {
     document.getElementById('sysPop').textContent = `${nearest.population.toFixed(1)} B`;
     document.getElementById('sysProd').textContent = nearest.productivity.toLocaleString();
     document.getElementById('sysRad').textContent = `${nearest.radius.toLocaleString()} km`;
+    document.getElementById('sysDesc').textContent = describeSystem(nearest);
   }
 
   requestAnimationFrame(frame);
