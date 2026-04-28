@@ -57,55 +57,93 @@
 
   #info {
     position: fixed;
-    bottom: 16px; left: 16px;
+    bottom: 0; left: 0; right: 0;
     z-index: 6;
     background: var(--panel);
     backdrop-filter: blur(10px) saturate(140%);
     -webkit-backdrop-filter: blur(10px) saturate(140%);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    width: 280px;
+    border-top: 1px solid var(--border);
+    padding: 14px 24px 16px;
     font-size: 11px;
     line-height: 1.5;
     /* Lock the panel to a fixed height so it doesn't reflow as the
        cursor moves across systems with longer/shorter descriptions. */
-    height: 270px;
+    height: 130px;
     box-sizing: border-box;
+    display: grid;
+    /* Three columns: name/coords | properties | description.
+       The description column expands to fill all leftover space.       */
+    grid-template-columns: 220px 1fr 2.2fr;
+    gap: 28px;
+    align-items: stretch;
+  }
+  #info .col {
     display: flex;
     flex-direction: column;
+    gap: 2px;
+    min-width: 0;             /* allows the description column to shrink */
   }
   #info h2 {
-    margin: 0 0 4px;
+    margin: 0 0 6px;
     color: var(--accent);
-    font-size: 14px;
+    font-size: 18px;
     letter-spacing: 0.15em;
     text-transform: uppercase;
     text-shadow: 0 0 6px var(--accent);
   }
-  #info .row { display: flex; justify-content: space-between; margin: 3px 0; }
-  #info .lbl { color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
-  #info .v { color: var(--ink); font-variant-numeric: tabular-nums; }
-  #info .v.warn { color: var(--warn); }
-  #info .description {
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
+  #info .col-coords .lbl {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  #info .col-coords .v {
     color: var(--ink);
-    font-size: 11px;
-    line-height: 1.55;
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+  }
+  /* Two rows × two columns of property pairs in the middle column —
+     compact enough to fit four key stats without scrolling.           */
+  #info .col-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-auto-rows: min-content;
+    gap: 4px 18px;
+    align-content: center;
+  }
+  #info .col-stats .row {
+    display: flex; flex-direction: column;
+    gap: 1px;
+  }
+  #info .col-stats .lbl {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  #info .col-stats .v {
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  #info .col-stats .v.warn { color: var(--warn); }
+  #info .description {
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.6;
     font-style: italic;
     opacity: 0.92;
-    /* Reserve a fixed slot for the description; clip overflow so longer
-       texts don't push the panel taller. The longest descriptions in
-       practice are ~220 chars; this fits roughly five lines.            */
-    flex: 1;
+    /* Soft fade at the bottom edge if a description happens to overflow,
+       rather than hard-clipping mid-sentence.                            */
     overflow: hidden;
+    mask-image: linear-gradient(180deg, black 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, black 80%, transparent 100%);
   }
 
   #legend {
     position: fixed;
-    bottom: 16px; right: 16px;
+    /* Sits just above the bottom info strip. */
+    bottom: 142px; right: 16px;
     z-index: 6;
     color: var(--muted);
     font-size: 9px;
@@ -241,15 +279,20 @@
   <div id="galaxy-tabs"></div>
 
   <div id="info">
-    <h2 id="sysName">—</h2>
-    <div class="row"><span class="lbl">Coordinates</span><span class="v" id="sysCoords">—</span></div>
-    <div class="row"><span class="lbl">Economy</span><span class="v" id="sysEcon">—</span></div>
-    <div class="row"><span class="lbl">Government</span><span class="v" id="sysGov">—</span></div>
-    <div class="row"><span class="lbl">Tech Level</span><span class="v" id="sysTech">—</span></div>
-    <div class="row"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
-    <div class="row"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
-    <div class="row"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
-    <div class="description" id="sysDesc">—</div>
+    <div class="col col-coords">
+      <h2 id="sysName">—</h2>
+      <span class="lbl">Coordinates</span>
+      <span class="v" id="sysCoords">—</span>
+    </div>
+    <div class="col col-stats">
+      <div class="row"><span class="lbl">Economy</span><span class="v" id="sysEcon">—</span></div>
+      <div class="row"><span class="lbl">Government</span><span class="v" id="sysGov">—</span></div>
+      <div class="row"><span class="lbl">Tech Level</span><span class="v" id="sysTech">—</span></div>
+      <div class="row"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
+      <div class="row"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
+      <div class="row"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
+    </div>
+    <div class="col description" id="sysDesc">—</div>
   </div>
 
   <div id="legend">MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY</div>
@@ -584,20 +627,15 @@ function applyThemeToCss(theme) {
 applyThemeToCss(getTheme(state.themeId));
 
 /* ---- coordinate mapping: chart space -> screen space ----
-   The chart's drawable region is the window minus the title at top, the
-   panels at bottom-left, and the legend at bottom-right. We cut a stepped
-   rectangle out of the bottom by simply shrinking marginBottom to the
-   panel's height plus a little breathing room. Systems redistribute
-   across the smaller area; nothing is hidden under panels.
-
-   Sizes here mirror the CSS — keep them in sync if the panels change.   */
-const PANEL_HEIGHT = 270;     // #info height
-const PANEL_BOTTOM = 16;      // #info bottom offset
+   The chart's drawable region is the window minus the title at top and
+   the horizontal info strip at the bottom. The strip spans full width,
+   so we just shrink the bottom margin to its height plus a little
+   breathing room. Sizes here mirror the CSS — keep in sync.            */
+const PANEL_HEIGHT = 130;     // #info height
 const TITLE_HEIGHT = 80;      // top margin (title + galaxy tabs)
 function chartBounds() {
-  const marginX = 80;
-  // Leave room for the panel + legend at the bottom of the screen.
-  const marginBottom = PANEL_HEIGHT + PANEL_BOTTOM + 16;
+  const marginX = 60;
+  const marginBottom = PANEL_HEIGHT + 16;
   return {
     x0: marginX,
     y0: TITLE_HEIGHT,
