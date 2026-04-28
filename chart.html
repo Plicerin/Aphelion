@@ -69,11 +69,12 @@
     /* Fixed height — never reflows. */
     height: 168px;
     box-sizing: border-box;
-    /* Two rows: stats above, description below.
-       The stats row is a CSS grid with fixed-width cells so longer values
-       wrap inside their cell instead of pushing siblings around.        */
+    /* Two rows: stats above (flexible), description below (fixed two-line
+       height so single-line and two-line descriptions occupy the same
+       slot). The auto-sized previous version reflowed the panel by ~18px
+       between short and long descriptions.                              */
     display: grid;
-    grid-template-rows: 1fr auto;
+    grid-template-rows: 1fr 42px;
     gap: 10px;
   }
   /* The stats row: hero (planet + name) + 4 fixed-width data cells. */
@@ -169,15 +170,22 @@
   #info .description {
     color: var(--ink);
     font-size: 12px;
-    line-height: 1.55;
+    line-height: 1.5;
     font-style: italic;
     opacity: 0.92;
     border-top: 1px solid var(--border);
     padding-top: 8px;
-    /* Soft fade on overflow rather than hard clipping mid-sentence. */
+    /* Hard-clamp to two lines so the row's height never changes. The
+       grid-template-rows reserves a fixed 42px slot regardless of how
+       much text we put here.                                            */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
-    mask-image: linear-gradient(180deg, black 78%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+    /* Soft fade on the second line so a clipped tail looks intentional
+       rather than truncated.                                            */
+    mask-image: linear-gradient(180deg, black 70%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, black 70%, transparent 100%);
   }
 
   #legend {
