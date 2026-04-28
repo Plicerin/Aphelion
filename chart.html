@@ -238,7 +238,12 @@ const GALAXY_MIDDLES = [
 ];
 const GALAXY_SUFFIXES = ['ia', 'us', 'on', 'is', 'ae', 'or', 'um', 'ix'];
 
-/* ---- themes (mirror of src/theme.ts) ---- */
+/* ---- themes (mirror of src/theme.ts) ----
+   Each role's color may be either a bare hue number (s/l defaulted) or a
+   full HSL triple. resolveColor() normalizes both into the same shape.   */
+function resolveColor(c) {
+  return typeof c === 'number' ? { h: c, s: 90, l: 60 } : c;
+}
 const THEMES = [
   { id: 'cyan',     name: 'Cyan',
     hues: { hull: 195, planet: 195, dust: 200, frame: 195, dash: 38,
@@ -255,6 +260,19 @@ const THEMES = [
   { id: 'plasma',   name: 'Plasma',
     hues: { hull: 290, planet: 290, dust: 270, frame: 290, dash: 320,
             system: 290, selected: 320, grid: 280, accent: 320, warn: 60 } },
+  { id: 'spectrum', name: 'Spectrum',
+    hues: {
+      hull:     { h: 210, s: 25, l: 75 },
+      planet:   { h: 195, s: 55, l: 60 },
+      dust:     { h: 210, s: 15, l: 88 },
+      frame:    { h:  30, s: 20, l: 60 },
+      dash:     { h: 130, s: 75, l: 60 },
+      system:   { h:  50, s: 25, l: 85 },
+      selected: { h:  38, s: 95, l: 65 },
+      grid:     { h: 210, s: 30, l: 50 },
+      accent:   { h:  38, s: 90, l: 65 },
+      warn:     { h:   0, s: 95, l: 60 },
+    } },
 ];
 const THEME_STORAGE_KEY = 'aphelion.theme';
 function loadSavedThemeId() {
@@ -406,16 +424,18 @@ resize();
    pipeline reads from the JS theme object directly.                    */
 function applyThemeToCss(theme) {
   const root = document.documentElement;
+  const accent = resolveColor(theme.hues.accent);
+  const warn = resolveColor(theme.hues.warn);
   // accent: bright, used for active highlights (info heading, glow on titles)
-  root.style.setProperty('--accent', `hsl(${theme.hues.accent}, 90%, 70%)`);
+  root.style.setProperty('--accent', `hsl(${accent.h}, ${accent.s}%, ${Math.min(95, accent.l + 10)}%)`);
   // ink: the ordinary readable foreground; slight tint of the accent
-  root.style.setProperty('--ink', `hsl(${theme.hues.accent}, 30%, 88%)`);
+  root.style.setProperty('--ink', `hsl(${accent.h}, ${Math.min(40, accent.s)}%, 88%)`);
   // border: very dim accent
-  root.style.setProperty('--border', `hsla(${theme.hues.accent}, 70%, 65%, 0.22)`);
+  root.style.setProperty('--border', `hsla(${accent.h}, ${Math.min(70, accent.s)}%, 65%, 0.22)`);
   // muted: lower-priority text
-  root.style.setProperty('--muted', `hsl(${theme.hues.accent}, 18%, 55%)`);
+  root.style.setProperty('--muted', `hsl(${accent.h}, 18%, 55%)`);
   // warn: alerts and low-tech systems
-  root.style.setProperty('--warn', `hsl(${theme.hues.warn}, 90%, 65%)`);
+  root.style.setProperty('--warn', `hsl(${warn.h}, ${warn.s}%, ${warn.l + 5}%)`);
 }
 applyThemeToCss(getTheme(state.themeId));
 
@@ -493,7 +513,8 @@ function renderSwatches() {
     sw.className = 'swatch' + (t.id === state.themeId ? ' on' : '');
     sw.dataset.name = t.name;
     // Show the theme's accent color in the swatch.
-    sw.style.background = `hsl(${t.hues.accent}, 90%, 60%)`;
+    const sc = resolveColor(t.hues.accent);
+    sw.style.background = `hsl(${sc.h}, ${sc.s}%, ${sc.l}%)`;
     sw.addEventListener('click', () => {
       state.themeId = t.id;
       saveThemeId(t.id);
@@ -639,10 +660,10 @@ function frame(now) {
   const layers = [
   const theme = getTheme(state.themeId);
   const layers = [
-    { name: 'grid',    grid: gGrid,     hue: theme.hues.grid     },
-    { name: 'system',  grid: gSystem,   hue: theme.hues.system   },
-    { name: 'selected',grid: gSelected, hue: theme.hues.selected },
-    { name: 'cursor',  grid: gCursor,   hue: theme.hues.selected },
+    { name: 'grid',    grid: gGrid,     color: resolveColor(theme.hues.grid)     },
+    { name: 'system',  grid: gSystem,   color: resolveColor(theme.hues.system)   },
+    { name: 'selected',grid: gSelected, color: resolveColor(theme.hues.selected) },
+    { name: 'cursor',  grid: gCursor,   color: resolveColor(theme.hues.selected) },
   ];
   for (const L of layers) {
     const b = getBucket(L.name);
@@ -665,14 +686,18 @@ function frame(now) {
       if (bestV < 0.06) continue;
       const ch = ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
       const x = gx * cell + cell / 2, y = gy * cell + cell / 2;
-      const hue = bestL.hue;
-      const light = 50 + bestV * 38;
+      // Modulate the role's base lightness by the cell's intensity:
+      // intensity 0 -> base*0.7, intensity 1 -> base+~25 (clamped).
+      // This lets the glow ramp work over any base lightness, not just one.
+      const base = bestL.color;
+      const light = Math.max(20, Math.min(95, base.l - 15 + bestV * 40));
 
-      ctx.fillStyle = `hsl(${hue}, 90%, ${light}%)`;
+      ctx.fillStyle = `hsl(${base.h}, ${base.s}%, ${light}%)`;
       ctx.fillText(ch, x, y);
 
       const buck = getBucket(bestL.name);
-      buck.ctx.fillStyle = `hsl(${hue}, 95%, ${Math.min(95, light + 18)}%)`;
+      // Bloom layer is rendered slightly brighter so the additive blur reads.
+      buck.ctx.fillStyle = `hsl(${base.h}, ${Math.min(100, base.s + 5)}%, ${Math.min(95, light + 18)}%)`;
       buck.ctx.fillText(ch, x, y);
     }
   }

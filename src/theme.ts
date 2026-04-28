@@ -29,13 +29,29 @@ export type Role =
   | 'accent'    // primary HUD accent / "your" color
   | 'warn';     // alerts, low-tech systems, danger
 
-/** A theme is just a map from role to HSL hue. */
+/**
+ * A color in a theme. The minimal form is just a hue (a number); for themes
+ * that want more control we accept a full HSL triple. The renderer treats
+ * a bare number as `{ h: n, s: 90, l: 60 }` — matching how all themes
+ * looked before this option existed.
+ *
+ * This keeps all the existing single-hue themes one-line entries while
+ * allowing the realistic theme to vary saturation and lightness per role.
+ */
+export type ThemeColor = number | { h: number; s: number; l: number };
+
+/** A theme is just a map from role to color. */
 export type Theme = {
   readonly id: string;
   readonly name: string;
   readonly description: string;
-  readonly hues: Readonly<Record<Role, number>>;
+  readonly hues: Readonly<Record<Role, ThemeColor>>;
 };
+
+/** Resolve a ThemeColor to a full HSL triple, applying defaults. */
+export function resolveColor(c: ThemeColor): { h: number; s: number; l: number } {
+  return typeof c === 'number' ? { h: c, s: 90, l: 60 } : c;
+}
 
 /**
  * The five built-in themes. Order matters — this is the order they appear
@@ -95,6 +111,42 @@ export const THEMES: readonly Theme[] = [
       planet: 290, dust: 270, frame: 290, dash: 320,
       system: 290, selected: 320, grid: 280,
       accent: 320, warn: 60,
+    },
+  },
+  {
+    id: 'spectrum',
+    name: 'Spectrum',
+    description: 'Full color — every role rendered in its natural hue.',
+    hues: {
+      // Hull: cool steel grey-blue, low saturation. Real ships aren't neon.
+      hull:     { h: 210, s: 25, l: 75 },
+      // Cockpit canopy: faintly tinted blue-green glass.
+      cockpit:  { h: 175, s: 40, l: 70 },
+      // Engine plasma: hot orange-red, hyper-saturated. The dramatic bit.
+      engine:   { h:  18, s: 95, l: 60 },
+      // Laser fire: classic sci-fi pink-red, high saturation.
+      laser:    { h: 340, s: 95, l: 65 },
+      // Planet: depends on the system, but our default render is a cool
+      // earth-like blue-green. (Future: tint by economy — agri = green,
+      // industrial = grey-brown.)
+      planet:   { h: 195, s: 55, l: 60 },
+      // Dust: pale white-blue, like sunlit particles.
+      dust:     { h: 210, s: 15, l: 88 },
+      // Cockpit frame: dim warm metal, structural.
+      frame:    { h:  30, s: 20, l: 60 },
+      // Dashboard readouts: classic green CRT — what you'd actually see
+      // through a cockpit's instrument cluster, regardless of hull paint.
+      dash:     { h: 130, s: 75, l: 60 },
+      // Chart system markers: warm white, like distant stars.
+      system:   { h:  50, s: 25, l: 85 },
+      // Selected/cursor: amber, the universal "look here" color.
+      selected: { h:  38, s: 95, l: 65 },
+      // Grid lines: very dim cool blue, recedes into the background.
+      grid:     { h: 210, s: 30, l: 50 },
+      // Accent: the warm amber of cockpit hardware.
+      accent:   { h:  38, s: 90, l: 65 },
+      // Warning: high-saturation red. Unmissable.
+      warn:     { h:   0, s: 95, l: 60 },
     },
   },
 ];

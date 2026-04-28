@@ -11,6 +11,7 @@ import {
   THEMES,
   getTheme,
   loadSavedThemeId,
+  resolveColor,
   saveThemeId,
   type Role,
 } from '../src/theme';
@@ -30,12 +31,16 @@ describe('themes', () => {
     }
   });
 
-  it('all hues are valid (0..360)', () => {
+  it('all hues resolve to valid HSL (0..360, 0..100, 0..100)', () => {
     for (const theme of THEMES) {
       for (const role of ALL_ROLES) {
-        const h = theme.hues[role];
-        expect(h).toBeGreaterThanOrEqual(0);
-        expect(h).toBeLessThanOrEqual(360);
+        const c = resolveColor(theme.hues[role]);
+        expect(c.h).toBeGreaterThanOrEqual(0);
+        expect(c.h).toBeLessThanOrEqual(360);
+        expect(c.s).toBeGreaterThanOrEqual(0);
+        expect(c.s).toBeLessThanOrEqual(100);
+        expect(c.l).toBeGreaterThanOrEqual(0);
+        expect(c.l).toBeLessThanOrEqual(100);
       }
     }
   });
@@ -59,6 +64,26 @@ describe('themes', () => {
       expect(theme.name.length).toBeGreaterThan(0);
       expect(theme.description.length).toBeGreaterThan(0);
     }
+  });
+
+  it('the spectrum theme uses varied saturation across roles', () => {
+    const spectrum = getTheme('spectrum');
+    const sats = ALL_ROLES.map((r) => resolveColor(spectrum.hues[r]).s);
+    const uniq = new Set(sats);
+    // We expect at least 4 distinct saturation values — that's what makes
+    // a "real color" theme feel different from a single-hue one.
+    expect(uniq.size).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('resolveColor', () => {
+  it('treats a bare number as the hue with default s/l', () => {
+    expect(resolveColor(180)).toEqual({ h: 180, s: 90, l: 60 });
+  });
+
+  it('passes through full HSL triples', () => {
+    const c = { h: 30, s: 50, l: 70 };
+    expect(resolveColor(c)).toEqual(c);
   });
 });
 
