@@ -11,9 +11,13 @@ import {
   fuelAfterJump,
   cabinHeat,
   isMassLocked,
+  updateDockingT,
   FUEL_MAX_LY,
   MASS_LOCK_RADIUS,
+  DOCK_TIME_REQUIRED,
+  DOCK_VELOCITY_MAX,
 } from '../src/sim/cockpit';
+import { ANCHOR_DOCK_RADIUS } from '../src/sim/anchor';
 import type { Vec3 } from '../src/sim/vec';
 
 describe('compass', () => {
@@ -136,5 +140,68 @@ describe('isMassLocked', () => {
   it('respects a custom radius', () => {
     expect(isMassLocked([20, 0, 0], [[0, 0, 0]], 10)).toBe(false);
     expect(isMassLocked([20, 0, 0], [[0, 0, 0]], 30)).toBe(true);
+  });
+});
+
+describe('updateDockingT', () => {
+  const anchor: Vec3 = [0, 0, 0];
+  const inside: Vec3 = [1, 0, 0];           // inside ANCHOR_DOCK_RADIUS=3
+  const outside: Vec3 = [10, 0, 0];          // outside
+
+  it('increments toward 1 when inside range at low speed', () => {
+    const t1 = updateDockingT(0, inside, 0, anchor, 1.0);
+    expect(t1).toBeCloseTo(1.0 / DOCK_TIME_REQUIRED, 6);
+  });
+
+  it('reaches 1 in DOCK_TIME_REQUIRED seconds when held', () => {
+    let t = 0;
+    const dt = 0.1;
+    for (let i = 0; i < DOCK_TIME_REQUIRED / dt; i++) {
+      t = updateDockingT(t, inside, 0, anchor, dt);
+    }
+    expect(t).toBeCloseTo(1, 4);
+  });
+
+  it('clamps at 1 — held longer than required', () => {
+    let t = 0;
+    for (let i = 0; i < 100; i++) t = updateDockingT(t, inside, 0, anchor, 0.1);
+    expect(t).toBe(1);
+  });
+
+  it('decays when out of range', () => {
+    const t1 = updateDockingT(0.5, outside, 0, anchor, 0.5);
+    expect(t1).toBeLessThan(0.5);
+    expect(t1).toBeGreaterThanOrEqual(0);
+  });
+
+  it('decays when speed exceeds DOCK_VELOCITY_MAX', () => {
+    const tooFast = DOCK_VELOCITY_MAX + 0.5;
+    const t1 = updateDockingT(0.5, inside, tooFast, anchor, 0.5);
+    expect(t1).toBeLessThan(0.5);
+  });
+
+  it('clamps at 0 — sustained out-of-range', () => {
+    let t = 0.3;
+    for (let i = 0; i < 100; i++) t = updateDockingT(t, outside, 0, anchor, 0.1);
+    expect(t).toBe(0);
+  });
+
+  it('decay is slower than increment (one blip does not full-reset)', () => {
+    // From t=1, one frame of decay should still leave room above 0.5
+    // for any reasonable dt because the decay rate is half the increment.
+    const decayed = updateDockingT(1, outside, 0, anchor, 1.0);
+    expect(decayed).toBeGreaterThan(0.5);
+    expect(decayed).toBeLessThan(1);
+  });
+
+  it('exactly at the dock radius counts as in-range', () => {
+    const onBoundary: Vec3 = [ANCHOR_DOCK_RADIUS, 0, 0];
+    const t1 = updateDockingT(0, onBoundary, 0, anchor, 0.5);
+    expect(t1).toBeGreaterThan(0);
+  });
+
+  it('exactly at DOCK_VELOCITY_MAX counts as slow', () => {
+    const t1 = updateDockingT(0, inside, DOCK_VELOCITY_MAX, anchor, 0.5);
+    expect(t1).toBeGreaterThan(0);
   });
 });

@@ -58,11 +58,17 @@
 
   /* Sections that show only on certain screens. Toggled by data-screen. */
   body[data-screen="chart"] .show-flight,
-  body[data-screen="chart"] .show-hyperspace { display: none; }
+  body[data-screen="chart"] .show-hyperspace,
+  body[data-screen="chart"] .show-docked { display: none; }
   body[data-screen="hyperspace"] .show-chart,
-  body[data-screen="hyperspace"] .show-flight { display: none; }
+  body[data-screen="hyperspace"] .show-flight,
+  body[data-screen="hyperspace"] .show-docked { display: none; }
   body[data-screen="flight"] .show-chart,
-  body[data-screen="flight"] .show-hyperspace { display: none; }
+  body[data-screen="flight"] .show-hyperspace,
+  body[data-screen="flight"] .show-docked { display: none; }
+  body[data-screen="docked"] .show-chart,
+  body[data-screen="docked"] .show-flight,
+  body[data-screen="docked"] .show-hyperspace { display: none; }
 
   /* ============== Theme picker ============== */
   #theme-picker {
@@ -477,6 +483,80 @@
     transform: translateY(0);
   }
 
+  /* ============== Docked screen ============== */
+  #docked-overlay {
+    position: fixed; inset: 0; z-index: 8;
+    background: radial-gradient(ellipse at center, rgba(2, 3, 10, 0.85) 0%, rgba(2, 3, 10, 0.97) 70%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+  }
+  #docked-overlay .docked-card {
+    background: rgba(10, 16, 32, 0.88);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 36px 48px 28px;
+    width: 460px;
+    max-width: 92vw;
+    text-align: center;
+    backdrop-filter: blur(8px) saturate(140%);
+    -webkit-backdrop-filter: blur(8px) saturate(140%);
+  }
+  #docked-overlay .head {
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin: 0 0 8px;
+  }
+  #docked-overlay .system-name {
+    font-size: 38px;
+    color: var(--accent);
+    text-shadow: 0 0 14px var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin: 0 0 4px;
+  }
+  #docked-overlay .system-meta {
+    font-size: 11px;
+    color: var(--ink);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.85;
+    margin: 0 0 24px;
+  }
+  #docked-overlay .stub {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 24px;
+    line-height: 1.6;
+    font-style: italic;
+  }
+  #docked-overlay .actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+  }
+  #docked-overlay button.launch {
+    background: var(--accent);
+    color: #02030a;
+    border: none;
+    padding: 12px 32px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: 4px;
+    box-shadow: 0 0 18px var(--accent);
+    transition: transform 0.1s;
+  }
+  #docked-overlay button.launch:hover { transform: translateY(-1px); }
+  #docked-overlay button.launch:active { transform: translateY(0); }
+
   /* ============== Flight HUD ============== */
   #hud-bl, #hud-br {
     position: fixed;
@@ -615,6 +695,22 @@
     <div class="countdown-distance" id="countdown-distance">—</div>
     <div class="countdown-number" id="countdown-number">3</div>
     <div class="countdown-cancel">Press <strong>ESC</strong> to cancel</div>
+  </div>
+
+  <!-- Docked overlay (docked screen only). Stub for the trade screen. -->
+  <div id="docked-overlay" class="show-docked">
+    <div class="docked-card">
+      <p class="head">◉ Signal acquired — anchored</p>
+      <h2 class="system-name" id="dockedSystem">—</h2>
+      <p class="system-meta" id="dockedMeta">—</p>
+      <p class="stub">
+        Trade interface coming soon. Holding here, decoding the local
+        market feed. Buy / sell / commodities will land in the next pass.
+      </p>
+      <div class="actions">
+        <button class="launch" id="launchBtn" type="button">◤ Launch</button>
+      </div>
+    </div>
   </div>
 
   <!-- Flight HUD (flight screen only) -->
@@ -952,6 +1048,21 @@ function isMassLocked(shipPos, bodies, mlRadius){
   }
   return false;
 }
+const DOCK_TIME_REQUIRED = 3.0;
+const DOCK_VELOCITY_MAX = 1.0;
+function updateDockingT(currentT, shipPos, shipSpeed, anchorPos, dt, dockRadius){
+  dockRadius = dockRadius == null ? ANCHOR_DOCK_RADIUS : dockRadius;
+  const dx = shipPos[0] - anchorPos[0];
+  const dy = shipPos[1] - anchorPos[1];
+  const dz = shipPos[2] - anchorPos[2];
+  const dist2 = dx*dx + dy*dy + dz*dz;
+  const inRange = dist2 <= dockRadius * dockRadius;
+  const slow = shipSpeed <= DOCK_VELOCITY_MAX;
+  if(inRange && slow){
+    return Math.min(1, currentT + dt / DOCK_TIME_REQUIRED);
+  }
+  return Math.max(0, currentT - dt / (DOCK_TIME_REQUIRED * 2));
+}
 
 /* ===== 5b. Trade anchor =====
    Each system has one trade anchor, a fixed point in flight world-space
@@ -1036,7 +1147,16 @@ function reduce(state, action){
         hyperspaceT: 1,
         // Reset ship for arrival: stationary, facing forward.
         ship: INITIAL_SHIP,
+        dockingT: 0,
       };
+    case 'dock-anchor':
+      // Player has held position long enough to "tune in" — switch to
+      // the docked screen. Trade interface lives there (stub for now).
+      return { ...state, screen:'docked' };
+    case 'launch':
+      // Leave the docked screen and return to flight, slightly clear of
+      // the anchor so the docking timer doesn't immediately retrigger.
+      return { ...state, screen:'flight', dockingT: 0, ship: INITIAL_SHIP };
     case 'open-chart':
       return { ...state, screen:'chart' };
     case 'set-galaxy':
@@ -1652,8 +1772,9 @@ function makeFlightLayer(name, color, cell, cols, rows, bloomMul = 1){
  * win without erasing existing content (matching how the rest of the
  * pipeline composes).
  */
-function drawAnchorStage(grid, cx, cy, cols, rows, info){
+function drawAnchorStage(grid, cx, cy, cols, rows, info, dockingT){
   if(info.stage === 'silent') return;
+  dockingT = dockingT || 0;
 
   const set = (gx, gy, v) => {
     if(gx < 0 || gx >= cols || gy < 0 || gy >= rows) return;
@@ -1699,8 +1820,11 @@ function drawAnchorStage(grid, cx, cy, cols, rows, info){
   }
 
   // 3. Lock-on bracket — only when CLOSE. Stable, no animation.
+  // Brightness intensifies with dockingT so the player can see they're
+  // "tuning in" successfully.
   if(info.stage === 'close'){
-    const lock = 0.7 + info.t*0.3;
+    const lockBoost = 0.15 * dockingT;
+    const lock = Math.min(1, 0.7 + info.t * 0.3 + lockBoost);
     const half = 4;
     const corners = [
       [cx-half, cy-half,  1,  1],
@@ -1712,6 +1836,23 @@ function drawAnchorStage(grid, cx, cy, cols, rows, info){
       set(bx, by, lock);
       set(bx+dx, by, lock*0.78);
       set(bx, by+dy, lock*0.78);
+    }
+  }
+
+  // 4. Docking progress ring — only meaningful inside the close stage.
+  // A clockwise arc starting at 12 o'clock, filling with dockingT.
+  // Reads as a "tuning-in" loading dial.
+  if(dockingT > 0.01 && info.stage === 'close'){
+    const ringR = 6;
+    const start = -Math.PI / 2;
+    const end = start + dockingT * Math.PI * 2;
+    const stepCount = Math.max(8, Math.floor(dockingT * 60));
+    for(let i = 0; i <= stepCount; i++){
+      const t = i / stepCount;
+      const a = start + t * (end - start);
+      const gx = Math.round(cx + Math.cos(a) * ringR);
+      const gy = Math.round(cy + Math.sin(a) * ringR);
+      set(gx, gy, 0.6 + 0.4 * dockingT);
     }
   }
 }
@@ -1885,7 +2026,7 @@ function renderFlight(state, theme, dt){
         const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
         const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
         const acx = Math.round(px/wCell), acy = Math.round(py/wCell);
-        drawAnchorStage(lAnchor.grid, acx, acy, wCols, wRows, info);
+        drawAnchorStage(lAnchor.grid, acx, acy, wCols, wRows, info, state.dockingT);
       }
     }
   }
@@ -2539,6 +2680,7 @@ let game = {
   ship: INITIAL_SHIP,
   hyperspaceT: 0,
   fuel: FUEL_MAX_LY,        // refilled at stations later; resets on reload for now
+  dockingT: 0,              // 0..1 progress toward "tuning in" at anchor
   themeId: loadSavedThemeId(),
 };
 
@@ -2562,6 +2704,16 @@ function updateTitle(){
     sub.textContent = `GALACTIC CHART · ${g.name.toUpperCase()} · GALAXY ${game.galaxyIdx+1} OF 8`;
   } else if(game.screen === 'hyperspace'){
     sub.textContent = 'HYPERSPACE';
+  } else if(game.screen === 'docked'){
+    const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
+    sub.textContent = sys ? `DOCKED · ${sys.name.toUpperCase()}` : 'DOCKED';
+    // Populate docked overlay content
+    const nameEl = document.getElementById('dockedSystem');
+    const metaEl = document.getElementById('dockedMeta');
+    if(nameEl && sys){
+      nameEl.textContent = sys.name;
+      metaEl.textContent = `${sys.economy} · ${sys.government} · TL ${sys.techLevel}`;
+    }
   } else {
     const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
     sub.textContent = sys ? `${sys.name.toUpperCase()} SYSTEM` : 'DEEP SPACE';
@@ -2720,6 +2872,11 @@ document.getElementById('open-chart-btn').addEventListener('click', ()=>{
   dispatch({ type:'open-chart' });
 });
 
+// Launch button on the docked overlay
+document.getElementById('launchBtn').addEventListener('click', ()=>{
+  dispatch({ type:'launch' });
+});
+
 // Main loop
 let lastFrame = performance.now();
 const HYPERSPACE_DURATION = 2.5;  // seconds
@@ -2732,6 +2889,19 @@ function frame(now){
   if(game.screen === 'flight'){
     const controls = sampleControls();
     game = { ...game, ship: stepShip(game.ship, controls, dt) };
+    // Docking timer — only meaningful when there's an anchor in this system.
+    if(systemBodies && systemBodies.anchor){
+      const newDT = updateDockingT(
+        game.dockingT ?? 0,
+        game.ship.position,
+        game.ship.speed,
+        systemBodies.anchor.position,
+        dt,
+      );
+      game = { ...game, dockingT: newDT };
+      // When the player has held station long enough, dock.
+      if(newDT >= 1) dispatch({ type:'dock-anchor' });
+    }
   } else if(game.screen === 'hyperspace'){
     const newT = Math.min(1, game.hyperspaceT + dt/HYPERSPACE_DURATION);
     game = { ...game, hyperspaceT: newT };
@@ -2748,6 +2918,7 @@ function frame(now){
   if(game.screen === 'chart')      renderChart(game, theme, dt);
   else if(game.screen === 'flight') renderFlight(game, theme, dt);
   else if(game.screen === 'hyperspace') renderHyperspace(game, theme, dt);
+  // 'docked' is a pure HTML overlay — no canvas render needed.
 
   requestAnimationFrame(frame);
 }
