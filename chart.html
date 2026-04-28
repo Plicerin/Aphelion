@@ -120,10 +120,76 @@
     border-color: var(--accent);
     font-weight: 700;
   }
+
+  /* ---- theme picker ---- */
+  #theme-picker {
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+  }
+  #theme-picker .label {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  #theme-picker .swatches {
+    display: flex;
+    gap: 3px;
+  }
+  #theme-picker .swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.15);
+    cursor: pointer;
+    transition: transform 0.1s, border-color 0.15s;
+    position: relative;
+  }
+  #theme-picker .swatch:hover {
+    transform: scale(1.15);
+    border-color: rgba(255,255,255,0.4);
+  }
+  #theme-picker .swatch.on {
+    border-color: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+  #theme-picker .swatch::after {
+    content: attr(data-name);
+    position: absolute;
+    top: 22px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 3px 6px;
+    color: var(--ink);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+  }
+  #theme-picker .swatch:hover::after { opacity: 1; }
 </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
+
+  <div id="theme-picker">
+    <span class="label">Theme</span>
+    <div class="swatches" id="theme-swatches"></div>
+  </div>
 
   <div id="title">
     APHELION
@@ -171,6 +237,39 @@ const GALAXY_MIDDLES = [
   'ar', 'el', 'ir', 'us', 'ol', 'iv', 'um', 'as',
 ];
 const GALAXY_SUFFIXES = ['ia', 'us', 'on', 'is', 'ae', 'or', 'um', 'ix'];
+
+/* ---- themes (mirror of src/theme.ts) ---- */
+const THEMES = [
+  { id: 'cyan',     name: 'Cyan',
+    hues: { hull: 195, planet: 195, dust: 200, frame: 195, dash: 38,
+            system: 195, selected: 38, grid: 195, accent: 195, warn: 12 } },
+  { id: 'phosphor', name: 'Phosphor',
+    hues: { hull: 110, planet: 110, dust: 100, frame: 110, dash: 75,
+            system: 110, selected: 75, grid: 110, accent: 110, warn: 50 } },
+  { id: 'amber',    name: 'Amber',
+    hues: { hull: 38, planet: 38, dust: 45, frame: 38, dash: 30,
+            system: 38, selected: 30, grid: 38, accent: 38, warn: 12 } },
+  { id: 'ember',    name: 'Ember',
+    hues: { hull: 195, planet: 28, dust: 210, frame: 195, dash: 28,
+            system: 195, selected: 28, grid: 200, accent: 28, warn: 0 } },
+  { id: 'plasma',   name: 'Plasma',
+    hues: { hull: 290, planet: 290, dust: 270, frame: 290, dash: 320,
+            system: 290, selected: 320, grid: 280, accent: 320, warn: 60 } },
+];
+const THEME_STORAGE_KEY = 'aphelion.theme';
+function loadSavedThemeId() {
+  try {
+    const v = localStorage.getItem(THEME_STORAGE_KEY);
+    if (v && THEMES.some(t => t.id === v)) return v;
+  } catch {}
+  return THEMES[0].id;
+}
+function saveThemeId(id) {
+  try { localStorage.setItem(THEME_STORAGE_KEY, id); } catch {}
+}
+function getTheme(id) {
+  return THEMES.find(t => t.id === id) ?? THEMES[0];
+}
 const ECONOMIES = [
   'Rich Industrial', 'Average Industrial', 'Poor Industrial', 'Mainly Industrial',
   'Mainly Agricultural', 'Rich Agricultural', 'Average Agricultural', 'Poor Agricultural',
@@ -281,11 +380,12 @@ const ctx = stage.getContext('2d', { alpha: false });
 const state = {
   galaxies: generateAllGalaxies(),
   galaxyIdx: 0,
-  cursor: { x: 128, y: 64 },          // chart-space coordinates (0..255, 0..127)
-  selected: null,                     // index of the selected (nearest) system
+  cursor: { x: 128, y: 64 },
+  selected: null,
   t: 0,
   glow: 0.7,
-  cellSize: 9,                        // px per glyph
+  cellSize: 9,
+  themeId: loadSavedThemeId(),
 };
 
 function resize() {
@@ -299,6 +399,25 @@ function resize() {
 }
 addEventListener('resize', resize);
 resize();
+
+/* ---- apply theme to CSS variables ----
+   The panels, title, info boxes etc. use CSS variables so changing the
+   theme is just a matter of updating those vars. The renderer's bloom
+   pipeline reads from the JS theme object directly.                    */
+function applyThemeToCss(theme) {
+  const root = document.documentElement;
+  // accent: bright, used for active highlights (info heading, glow on titles)
+  root.style.setProperty('--accent', `hsl(${theme.hues.accent}, 90%, 70%)`);
+  // ink: the ordinary readable foreground; slight tint of the accent
+  root.style.setProperty('--ink', `hsl(${theme.hues.accent}, 30%, 88%)`);
+  // border: very dim accent
+  root.style.setProperty('--border', `hsla(${theme.hues.accent}, 70%, 65%, 0.22)`);
+  // muted: lower-priority text
+  root.style.setProperty('--muted', `hsl(${theme.hues.accent}, 18%, 55%)`);
+  // warn: alerts and low-tech systems
+  root.style.setProperty('--warn', `hsl(${theme.hues.warn}, 90%, 65%)`);
+}
+applyThemeToCss(getTheme(state.themeId));
 
 /* ---- coordinate mapping: chart space -> screen space ----
    The chart fills the screen but with margins for title and info panel. */
@@ -364,6 +483,27 @@ function setGalaxy(idx) {
 
 // initialize the title to show galaxy 1's name
 setGalaxy(0);
+
+/* ---- theme picker ---- */
+const swatchContainer = document.getElementById('theme-swatches');
+function renderSwatches() {
+  swatchContainer.innerHTML = '';
+  for (const t of THEMES) {
+    const sw = document.createElement('div');
+    sw.className = 'swatch' + (t.id === state.themeId ? ' on' : '');
+    sw.dataset.name = t.name;
+    // Show the theme's accent color in the swatch.
+    sw.style.background = `hsl(${t.hues.accent}, 90%, 60%)`;
+    sw.addEventListener('click', () => {
+      state.themeId = t.id;
+      saveThemeId(t.id);
+      applyThemeToCss(getTheme(t.id));
+      renderSwatches();
+    });
+    swatchContainer.appendChild(sw);
+  }
+}
+renderSwatches();
 
 /* ---- offscreen color buckets for clean per-color bloom ---- */
 const buckets = {};
@@ -497,10 +637,12 @@ function frame(now) {
 
   /* --- render: pick brightest grid per cell, draw to bucket --- */
   const layers = [
-    { name: 'grid',    grid: gGrid,     hue: 195 },
-    { name: 'system',  grid: gSystem,   hue: 195 },
-    { name: 'selected',grid: gSelected, hue: 38  },
-    { name: 'cursor',  grid: gCursor,   hue: 38  },
+  const theme = getTheme(state.themeId);
+  const layers = [
+    { name: 'grid',    grid: gGrid,     hue: theme.hues.grid     },
+    { name: 'system',  grid: gSystem,   hue: theme.hues.system   },
+    { name: 'selected',grid: gSelected, hue: theme.hues.selected },
+    { name: 'cursor',  grid: gCursor,   hue: theme.hues.selected },
   ];
   for (const L of layers) {
     const b = getBucket(L.name);
