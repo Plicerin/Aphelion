@@ -537,36 +537,58 @@
       const drift = state.t * 0.01;
 
       if (state.style === 'proposed') {
-        // Filled disc. For each grid cell within radius (and within the
-        // visible upper-right quadrant of the sphere) pick a surface
-        // character + brightness from light direction.
+        // Filled disc with sphere-projected surface coordinates so the
+        // planet actually rotates: surface features advance in longitude
+        // over time, compress near the limb, and lighting stays fixed in
+        // screen space (light source doesn't move with the planet).
+        //
+        //   screen point (dx, dy) on disc, normalised to (nx, ny).
+        //   latitude  = asin(ny)
+        //   longitude_visible = asin(nx / cos(latitude))   [near hemisphere]
+        //   longitude_surface = longitude_visible + driftLng(t)
+        //
+        // The drift adds rotation about the spin axis (vertical screen
+        // axis ≈ planet's pole here). Both noise and glyph lookups use
+        // (latitude, longitude_surface) so features move with the spin.
         const cell = lPlanet.cell;
         const cxc = cx / cell, cyc = cy / cell, rc = radius / cell;
+        const driftLng = state.t * 0.18;            // ~35 sec per full rotation
         for (let gy = Math.floor(cyc - rc - 1); gy <= Math.ceil(cyc + 1); gy++) {
           for (let gx = Math.floor(cxc - rc - 1); gx <= Math.ceil(cxc + rc + 1); gx++) {
             const dx = gx - cxc, dy = gy - cyc;
             const d = Math.hypot(dx, dy);
             if (d > rc) continue;
-            // Only render the upper hemisphere of the sphere (visible above
-            // the dashboard). The cy is below screen, so dy < 0 means above.
+            // Upper hemisphere only (cy is below screen, so dy < 0 = above).
             if (dy > 0) continue;
-            // Lighting: light from upper-right (camera-facing).
             const nx = dx / rc, ny = dy / rc;
-            const light = 0.6 * nx - 0.8 * ny;        // top-right is bright
-            // Surface noise via two trig waves — gives soft "continents".
-            const noise = (Math.sin(gx * 0.27 + drift * 4) + Math.cos(gy * 0.31)
-                         + Math.sin((gx + gy) * 0.19)) / 3;     // -1..1
+            // Lighting — fixed in screen space (light doesn't rotate).
+            const light = 0.6 * nx - 0.8 * ny;
+            // Sphere projection.
+            const lat = Math.asin(Math.max(-1, Math.min(1, ny)));
+            const cosLat = Math.cos(lat);
+            if (cosLat < 0.04) continue;             // skip the poles
+            const lonArg = nx / cosLat;
+            if (Math.abs(lonArg) > 1) continue;      // outside visible hemisphere
+            const lonVis = Math.asin(lonArg);
+            const lon = lonVis + driftLng;           // surface longitude — rotates
+            // Continuous-globe noise: continents move with longitude.
+            const noise = (Math.sin(lon * 4.5) + Math.cos(lat * 6)
+                         + Math.sin((lon - lat) * 3.5)) / 3;
             const isAccent = noise > 0.18;
-            // Brightness varies with light + noise + edge fall-off.
             const edge = Math.min(1, (rc - d) / 1.2);
             const v = Math.max(0, Math.min(1,
               0.45 + light * 0.32 + noise * 0.14)) * edge;
             if (v < 0.18) continue;
-            const ch = pPick(gx, gy, 13, G.planetBody);
+            // Glyph keyed to surface coords — character at a screen cell
+            // changes as the surface rotates beneath it.
+            const hashLon = Math.round(lon * 6);
+            const hashLat = Math.round(lat * 9);
+            const ch = pPick(hashLon, hashLat, 13, G.planetBody);
             setCell(isAccent ? lPlanetAcc : lPlanet, gx, gy, v, ch);
           }
         }
-        // Bright limb edge — brighter band right at the visible silhouette.
+        // Bright limb edge — silhouette doesn't rotate; only the inside does.
+        // Tiny apparent drift kept for camera-roll feel.
         for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.15; a += 0.006) {
           const x = cx + Math.cos(a + drift) * radius;
           const y = cy + Math.sin(a + drift) * radius;
