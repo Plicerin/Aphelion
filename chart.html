@@ -657,7 +657,6 @@ function frame(now) {
   }
 
   /* --- render: pick brightest grid per cell, draw to bucket --- */
-  const layers = [
   const theme = getTheme(state.themeId);
   const layers = [
     { name: 'grid',    grid: gGrid,     color: resolveColor(theme.hues.grid)     },
