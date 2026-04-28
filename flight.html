@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APHELION — Flight</title>
+<style>
+  :root {
+    --bg: #02030a;
+    --panel: rgba(10, 16, 32, 0.78);
+    --border: rgba(120, 200, 255, 0.22);
+    --ink: #cfe7ff;
+    --muted: #6b7a99;
+    --accent: #7cf7ff;
+    --warn: #ffb84a;
+  }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+    height: 100%;
+  }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 3px);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #stage { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #title {
+    position: fixed;
+    top: 14px; left: 0; right: 0;
+    z-index: 6;
+    text-align: center;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.5em;
+    text-transform: uppercase;
+    text-shadow: 0 0 8px var(--accent);
+    pointer-events: none;
+  }
+  #title .sub {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-shadow: none;
+  }
+
+  /* ---- HUD readouts in corners ---- */
+  #hud-bl, #hud-br {
+    position: fixed;
+    bottom: 16px;
+    z-index: 6;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-shadow: 0 0 6px var(--accent);
+    line-height: 1.6;
+    pointer-events: none;
+  }
+  #hud-bl { left: 24px; }
+  #hud-br { right: 24px; text-align: right; }
+  #hud-bl .lbl, #hud-br .lbl { color: var(--muted); text-shadow: none; font-size: 9px; }
+  #hud-bl .v, #hud-br .v { font-variant-numeric: tabular-nums; }
+
+  #legend {
+    position: fixed;
+    top: 14px; right: 16px;
+    z-index: 6;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-align: right;
+    line-height: 1.6;
+    pointer-events: none;
+  }
+  #legend strong { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="title">
+    APHELION
+    <div class="sub">FLIGHT · COBRA MK III</div>
+  </div>
+
+  <div id="legend">
+    <strong>W A S D</strong> PITCH/YAW · <strong>Q E</strong> ROLL<br>
+    <strong>SHIFT</strong> THROTTLE UP · <strong>CTRL</strong> DOWN
+  </div>
+
+  <div id="hud-bl">
+    <div><span class="lbl">SPEED</span> <span class="v" id="hSpeed">0.0</span></div>
+    <div><span class="lbl">THROTTLE</span> <span class="v" id="hThr">0%</span></div>
+  </div>
+
+  <div id="hud-br">
+    <div><span class="lbl">PITCH</span> <span class="v" id="hPitch">0°</span></div>
+    <div><span class="lbl">YAW</span> <span class="v" id="hYaw">0°</span></div>
+    <div><span class="lbl">ROLL</span> <span class="v" id="hRoll">0°</span></div>
+  </div>
+
+<script type="module">
+/* ============================================================================
+   APHELION — FLIGHT
+   ----------------------------------------------------------------------------
+   Inlined module: vec math + ship sim + glowing-ASCII renderer.
+   The TS source under src/sim/ and src/render/ is the canonical version;
+   this file mirrors it so the prototype runs as a single HTML file with no
+   build step.
+   ============================================================================ */
+
+/* ---------- vec math (mirror of src/sim/vec.ts) ---------- */
+const V_ZERO = [0, 0, 0];
+const V_FORWARD = [0, 0, 1];
+const V_UP = [0, 1, 0];
+const V_RIGHT = [1, 0, 0];
+const Q_IDENTITY = [0, 0, 0, 1];
+
+function vAdd(a, b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+function vScale(a, s) { return [a[0]*s, a[1]*s, a[2]*s]; }
+function vLength(a) { return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); }
+function vNormalize(a) {
+  const len = vLength(a);
+  if (len < 1e-9) return V_ZERO;
+  return [a[0]/len, a[1]/len, a[2]/len];
+}
+
+function qRotate(q, v) {
+  const [x, y, z, w] = q, [vx, vy, vz] = v;
+  const tx = 2 * (y*vz - z*vy);
+  const ty = 2 * (z*vx - x*vz);
+  const tz = 2 * (x*vy - y*vx);
+  return [
+    vx + w*tx + (y*tz - z*ty),
+    vy + w*ty + (z*tx - x*tz),
+    vz + w*tz + (x*ty - y*tx),
+  ];
+}
+function qMul(a, b) {
+  const [ax, ay, az, aw] = a, [bx, by, bz, bw] = b;
+  return [
+    aw*bx + ax*bw + ay*bz - az*by,
+    aw*by - ax*bz + ay*bw + az*bx,
+    aw*bz + ax*by - ay*bx + az*bw,
+    aw*bw - ax*bx - ay*by - az*bz,
+  ];
+}
+function qConjugate(q) { return [-q[0], -q[1], -q[2], q[3]]; }
+function qFromAxisAngle(axis, angle) {
+  const half = angle * 0.5;
+  const s = Math.sin(half);
+  const n = vNormalize(axis);
+  return [n[0]*s, n[1]*s, n[2]*s, Math.cos(half)];
+}
+function qNormalize(q) {
+  const len = Math.sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+  if (len < 1e-9) return Q_IDENTITY;
+  return [q[0]/len, q[1]/len, q[2]/len, q[3]/len];
+}
+
+/* ---------- ship sim (mirror of src/sim/ship.ts) ---------- */
+const TUNING = {
+  maxSpeed: 80,
+  throttleResponse: 1.5,
+  turnRate: 1.2,
+  rollRate: 2.0,
+  velocityAlignRate: 4.0,
+};
+
+function stepShip(ship, c, dt) {
+  const throttle = Math.max(0, Math.min(1, ship.throttle + c.throttleDelta * dt));
+  const pitchQ = qFromAxisAngle(V_RIGHT,   c.pitch * TUNING.turnRate * dt);
+  const yawQ   = qFromAxisAngle(V_UP,      c.yaw   * TUNING.turnRate * dt);
+  const rollQ  = qFromAxisAngle(V_FORWARD, c.roll  * TUNING.rollRate * dt);
+  let orientation = qMul(ship.orientation, qMul(yawQ, qMul(pitchQ, rollQ)));
+  orientation = qNormalize(orientation);
+
+  const targetSpeed = throttle * TUNING.maxSpeed;
+  const speedAlpha = 1 - Math.exp(-TUNING.throttleResponse * dt);
+  const speed = ship.speed + (targetSpeed - ship.speed) * speedAlpha;
+
+  const forward = qRotate(orientation, V_FORWARD);
+  const targetVel = vScale(forward, speed);
+  const alignAlpha = 1 - Math.exp(-TUNING.velocityAlignRate * dt);
+  const velocity = [
+    ship.velocity[0] + (targetVel[0] - ship.velocity[0]) * alignAlpha,
+    ship.velocity[1] + (targetVel[1] - ship.velocity[1]) * alignAlpha,
+    ship.velocity[2] + (targetVel[2] - ship.velocity[2]) * alignAlpha,
+  ];
+  const position = vAdd(ship.position, vScale(velocity, dt));
+  return { position, orientation, velocity, throttle, speed };
+}
+
+/* ---------- input (mirror of src/render/input.ts) ---------- */
+const BINDS = {
+  pitchDown:  ['KeyW', 'ArrowUp'],
+  pitchUp:    ['KeyS', 'ArrowDown'],
+  yawLeft:    ['KeyA', 'ArrowLeft'],
+  yawRight:   ['KeyD', 'ArrowRight'],
+  rollLeft:   ['KeyQ'],
+  rollRight:  ['KeyE'],
+  throttleUp:   ['ShiftLeft', 'ShiftRight'],
+  throttleDown: ['ControlLeft', 'ControlRight'],
+};
+const held = new Set();
+addEventListener('keydown', (e) => {
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  held.add(e.code);
+  if (e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', (e) => held.delete(e.code));
+addEventListener('blur', () => held.clear());
+function anyHeld(axis) { for (const c of BINDS[axis]) if (held.has(c)) return true; return false; }
+function sampleControls() {
+  return {
+    pitch: (anyHeld('pitchUp')   ? 1 : 0) - (anyHeld('pitchDown') ? 1 : 0),
+    yaw:   (anyHeld('yawRight')  ? 1 : 0) - (anyHeld('yawLeft')   ? 1 : 0),
+    roll:  (anyHeld('rollRight') ? 1 : 0) - (anyHeld('rollLeft')  ? 1 : 0),
+    throttleDelta:
+      (anyHeld('throttleUp')   ? 1 : 0) -
+      (anyHeld('throttleDown') ? 1 : 0),
+  };
+}
+
+/* ============================================================================
+   World — what we render in 3D space.
+   ----------------------------------------------------------------------------
+   Stars are at "infinity": they only rotate around the ship, never translate.
+   Dust particles are nearby: they get translated by the ship's motion and
+   rotated by its orientation. When a dust particle gets too far away (or
+   passes behind the ship), it recycles to a fresh random position ahead.
+   ============================================================================ */
+
+// Stars: random points on a unit sphere.
+const stars = [];
+for (let i = 0; i < 320; i++) {
+  // Uniform on a sphere via z-then-theta sampling.
+  const z = Math.random() * 2 - 1;
+  const theta = Math.random() * Math.PI * 2;
+  const r = Math.sqrt(1 - z * z);
+  stars.push({
+    pos: [r * Math.cos(theta), r * Math.sin(theta), z],
+    mag: Math.random() * 0.6 + 0.3,
+  });
+}
+
+// Dust: nearby particles in world space.
+const DUST_RANGE = 60;          // particles live within this radius of the ship
+const DUST_COUNT = 80;
+const dust = [];
+function recycleDust(d, ahead) {
+  // Place a new dust particle at a random offset around the ship.
+  // If `ahead`, push it in front along the forward axis so it appears
+  // out of the distance; otherwise place it anywhere in the sphere.
+  const r = DUST_RANGE * (0.5 + Math.random() * 0.5);
+  const z = Math.random() * 2 - 1;
+  const theta = Math.random() * Math.PI * 2;
+  const xyR = Math.sqrt(1 - z * z);
+  d.pos = [xyR * Math.cos(theta) * r, xyR * Math.sin(theta) * r, z * r];
+}
+for (let i = 0; i < DUST_COUNT; i++) {
+  const d = { pos: [0, 0, 0] };
+  recycleDust(d, false);
+  dust.push(d);
+}
+
+/* ============================================================================
+   Renderer
+   ----------------------------------------------------------------------------
+   Same glowing-ASCII pipeline as the chart — intensity grid, color buckets,
+   bloom passes — but in service of a 3D scene rather than a 2D chart.
+   ============================================================================ */
+
+const stage = document.getElementById('stage');
+const ctx = stage.getContext('2d', { alpha: false });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(innerWidth * dpr));
+  const h = Math.max(1, Math.floor(innerHeight * dpr));
+  stage.width = w; stage.height = h;
+  stage.style.width = innerWidth + 'px';
+  stage.style.height = innerHeight + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ---- offscreen color buckets for clean per-color bloom ---- */
+const buckets = {};
+function getBucket(name) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, stage.width || Math.floor(innerWidth * dpr));
+  const h = Math.max(1, stage.height || Math.floor(innerHeight * dpr));
+  if (!buckets[name] || buckets[name].canvas.width !== w || buckets[name].canvas.height !== h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buckets[name] = { canvas: c, ctx: cx };
+  }
+  return buckets[name];
+}
+
+const ramp = " .·:-=+*#%@█";
+
+// Camera/projection settings.
+const FOV = 380;       // pixels per radian-ish; controls perspective
+const cell = 8;        // glyph cell size
+
+/* ---- main loop ---- */
+let ship = {
+  position: V_ZERO,
+  orientation: Q_IDENTITY,
+  velocity: V_ZERO,
+  throttle: 0,
+  speed: 0,
+};
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  // --- step the simulation ---
+  const controls = sampleControls();
+  ship = stepShip(ship, controls, dt);
+
+  // --- prepare render ---
+  const W = innerWidth, H = innerHeight;
+  const cols = Math.ceil(W / cell);
+  const rows = Math.ceil(H / cell);
+
+  ctx.fillStyle = 'rgba(2, 3, 10, 1)';
+  ctx.fillRect(0, 0, W, H);
+
+  // To project a world point into camera space, we apply the INVERSE of
+  // the ship's orientation. Conjugate of a unit quaternion is its inverse.
+  const invOrient = qConjugate(ship.orientation);
+
+  // --- intensity grids per color role ---
+  const gStars = new Float32Array(cols * rows);
+  const gDust  = new Float32Array(cols * rows);
+  const gFrame = new Float32Array(cols * rows);
+
+  // --- stars: rotate to camera space, project ---
+  for (const s of stars) {
+    const cam = qRotate(invOrient, s.pos);
+    if (cam[2] < 0.05) continue;     // behind camera
+    const px = (cam[0] * FOV) / cam[2] + W / 2;
+    const py = (-cam[1] * FOV) / cam[2] + H / 2;
+    const gx = Math.round(px / cell), gy = Math.round(py / cell);
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+    const idx = gy * cols + gx;
+    if (s.mag > gStars[idx]) gStars[idx] = s.mag;
+  }
+
+  // --- dust: translate to ship-relative, rotate to camera, project ---
+  for (const d of dust) {
+    // Move dust opposite to ship motion (we hold the camera at origin and
+    // move the world). When the ship moves +Z, dust moves -Z relative to it.
+    d.pos = [
+      d.pos[0] - ship.velocity[0] * dt,
+      d.pos[1] - ship.velocity[1] * dt,
+      d.pos[2] - ship.velocity[2] * dt,
+    ];
+    const distSq = d.pos[0]*d.pos[0] + d.pos[1]*d.pos[1] + d.pos[2]*d.pos[2];
+    if (distSq > DUST_RANGE * DUST_RANGE * 1.4) {
+      recycleDust(d, true);
+      continue;
+    }
+    const cam = qRotate(invOrient, d.pos);
+    if (cam[2] < 0.5) continue;
+    const px = (cam[0] * FOV) / cam[2] + W / 2;
+    const py = (-cam[1] * FOV) / cam[2] + H / 2;
+    const gx = Math.round(px / cell), gy = Math.round(py / cell);
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+    // Brighter when closer; fade with distance.
+    const v = Math.max(0.2, Math.min(1, 1 - cam[2] / DUST_RANGE));
+    const idx = gy * cols + gx;
+    if (v > gDust[idx]) gDust[idx] = v;
+
+    // Streak: a second cell behind it in screen-space proportional to speed.
+    // This is what makes fast travel feel fast. We project a slightly
+    // earlier position and draw the line between projections.
+    if (ship.speed > 5) {
+      const trailFactor = Math.min(1, ship.speed / TUNING.maxSpeed);
+      const back = [d.pos[0] + ship.velocity[0] * dt * 4 * trailFactor,
+                    d.pos[1] + ship.velocity[1] * dt * 4 * trailFactor,
+                    d.pos[2] + ship.velocity[2] * dt * 4 * trailFactor];
+      const camB = qRotate(invOrient, back);
+      if (camB[2] >= 0.5) {
+        const pxB = (camB[0] * FOV) / camB[2] + W / 2;
+        const pyB = (-camB[1] * FOV) / camB[2] + H / 2;
+        const dx = pxB - px, dy = pyB - py;
+        const steps = Math.min(10, Math.ceil(Math.hypot(dx, dy) / cell));
+        for (let s = 1; s <= steps; s++) {
+          const t = s / steps;
+          const sx = Math.round((px + dx * t) / cell);
+          const sy = Math.round((py + dy * t) / cell);
+          if (sx < 0 || sx >= cols || sy < 0 || sy >= rows) continue;
+          const fade = v * (1 - t * 0.7);
+          const idx2 = sy * cols + sx;
+          if (fade > gDust[idx2]) gDust[idx2] = fade;
+        }
+      }
+    }
+  }
+
+  // --- cockpit frame: a trapezoidal viewport around the screen edges ---
+  // This is in screen space, not world space — it doesn't rotate with the
+  // ship. The frame implies that the player is looking out through a
+  // canopy whose physical edges are visible.
+  {
+    const inset = 14;
+    const slant = innerWidth * 0.06;
+    const dashTop = H - 80;     // above the bottom HUD strip
+    function plotLine(x1, y1, x2, y2, brightness) {
+      const a = x1 / cell, b = y1 / cell, c = x2 / cell, d = y2 / cell;
+      const steps = Math.max(2, Math.ceil(Math.hypot(c - a, d - b)));
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const gx = Math.round(a + (c - a) * t);
+        const gy = Math.round(b + (d - b) * t);
+        if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+        const idx = gy * cols + gx;
+        if (brightness > gFrame[idx]) gFrame[idx] = brightness;
+      }
+    }
+    // Top edge
+    plotLine(inset, inset, W - inset, inset, 0.7);
+    // Slanted left and right
+    plotLine(inset, inset, inset + slant, dashTop, 0.7);
+    plotLine(W - inset, inset, W - inset - slant, dashTop, 0.7);
+    // Dashboard top edge
+    plotLine(inset + slant, dashTop, W - inset - slant, dashTop, 0.85);
+
+    // Crosshair at the center of the canopy
+    const ccx = (W / 2) / cell;
+    const ccy = (H * 0.42) / cell;   // visually centered in the canopy area
+    const arm = 2.0, gap = 0.6;
+    plotLine((ccx - arm - gap) * cell, ccy * cell, (ccx - gap) * cell, ccy * cell, 0.95);
+    plotLine((ccx + gap) * cell, ccy * cell, (ccx + arm + gap) * cell, ccy * cell, 0.95);
+    plotLine(ccx * cell, (ccy - arm - gap) * cell, ccx * cell, (ccy - gap) * cell, 0.95);
+    plotLine(ccx * cell, (ccy + gap) * cell, ccx * cell, (ccy + arm + gap) * cell, 0.95);
+  }
+
+  // --- render: pick brightest grid per cell, write to canvas + bucket ---
+  const layers = [
+    { name: 'stars', grid: gStars, hue: 200, sat: 30, light: 80 },
+    { name: 'dust',  grid: gDust,  hue: 195, sat: 70, light: 65 },
+    { name: 'frame', grid: gFrame, hue: 195, sat: 90, light: 65 },
+  ];
+  for (const L of layers) {
+    const b = getBucket(L.name);
+    b.ctx.clearRect(0, 0, W, H);
+    b.ctx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+    b.ctx.textBaseline = 'middle';
+    b.ctx.textAlign = 'center';
+  }
+  ctx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const idx = gy * cols + gx;
+      let bestV = 0, bestL = null;
+      for (const L of layers) {
+        if (L.grid[idx] > bestV) { bestV = L.grid[idx]; bestL = L; }
+      }
+      if (bestV < 0.06) continue;
+      const ch = ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
+      const x = gx * cell + cell / 2, y = gy * cell + cell / 2;
+      const light = Math.max(20, Math.min(95, bestL.light - 15 + bestV * 40));
+
+      ctx.fillStyle = `hsl(${bestL.hue}, ${bestL.sat}%, ${light}%)`;
+      ctx.fillText(ch, x, y);
+      const b = getBucket(bestL.name);
+      b.ctx.fillStyle = `hsl(${bestL.hue}, ${Math.min(100, bestL.sat + 5)}%, ${Math.min(95, light + 18)}%)`;
+      b.ctx.fillText(ch, x, y);
+    }
+  }
+
+  // --- bloom passes ---
+  ctx.globalCompositeOperation = 'lighter';
+  const passes = [
+    { blur: 2,  alpha: 0.6 },
+    { blur: 6,  alpha: 0.5 },
+    { blur: 16, alpha: 0.4 },
+    { blur: 36, alpha: 0.25 },
+  ];
+  for (const L of layers) {
+    const b = getBucket(L.name);
+    if (!b.canvas.width || !b.canvas.height) continue;
+    for (const p of passes) {
+      ctx.filter = `blur(${p.blur}px)`;
+      ctx.globalAlpha = p.alpha * 0.7;
+      ctx.drawImage(b.canvas, 0, 0, W, H);
+    }
+  }
+  ctx.filter = 'none';
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // --- HUD updates ---
+  document.getElementById('hSpeed').textContent = ship.speed.toFixed(1);
+  document.getElementById('hThr').textContent = `${Math.round(ship.throttle * 100)}%`;
+  // For pitch/yaw/roll readouts, decompose orientation back to Euler angles
+  // for display only (we don't use them in the simulation).
+  const fwd = qRotate(ship.orientation, V_FORWARD);
+  const right = qRotate(ship.orientation, V_RIGHT);
+  const up = qRotate(ship.orientation, V_UP);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, fwd[1])));
+  const yaw = Math.atan2(fwd[0], fwd[2]);
+  const roll = Math.atan2(right[1], up[1]);
+  document.getElementById('hPitch').textContent = `${(pitch * 180 / Math.PI).toFixed(0)}°`;
+  document.getElementById('hYaw').textContent = `${(yaw * 180 / Math.PI).toFixed(0)}°`;
+  document.getElementById('hRoll').textContent = `${(roll * 180 / Math.PI).toFixed(0)}°`;
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
