@@ -6,14 +6,14 @@ Goal: someone can launch the game, hyperspace between two systems, dock at a sta
 
 - [x] Galaxy generator (256 systems × 8 galaxies, deterministic)
 - [x] Galactic chart visualization
-- [ ] Goat-soup style description generator (recursive grammar, ours)
-- [ ] Ship blueprint loader for at least 4 ship types
-- [ ] Cockpit view with crosshair, dashboard, scanner
-- [ ] Newtonian-ish flight model (throttle + pitch + roll + yaw)
-- [ ] Hyperspace tunnel transition between systems
+- [x] Goat-soup style description generator (recursive grammar, ours)
+- [x] Hyperspace tunnel transition between systems
+- [x] Cockpit view with crosshair, dashboard, scanner
+- [x] Newtonian-ish flight model (throttle + pitch + roll + yaw)
+- [x] Save game in localStorage
 - [ ] Coriolis station with rotating slot to dock through
 - [ ] Trade screen with all 17 commodities and the supply/demand price model
-- [ ] Save game in localStorage
+- [ ] Ship blueprint loader for at least 4 ship types (1 done — the Cobra)
 
 ## v0.2 — combat
 
