@@ -1098,10 +1098,72 @@ function recycleDust(d){
 }
 for(let i=0;i<DUST_COUNT;i++){ const d={pos:[0,0,0]}; recycleDust(d); dust.push(d); }
 
+/**
+ * Per-system "bodies" — the sun and planet of the system you arrived in.
+ * These exist in world space at fixed positions, derived deterministically
+ * from the system's seed so every time you visit the system the layout
+ * is the same. The planet's surface pattern uses the same makeDescRng
+ * pipeline as the chart's hero panel, so they look like the same world.
+ *
+ * On arrival we set arrivedInSystem to the system seed, then derive
+ * positions from it. We rebuild on every system change.
+ */
+let systemBodies = null;     // { sun:{pos}, planet:{pos, sys, surface[]} } or null
+let systemBodiesSeed = null;
+
+function buildSystemBodies(sys){
+  // Sun is far ahead, slightly above the player's spawn pose. Position is
+  // deterministic from the seed so every player sees the same arrangement.
+  const r = makeDescRng(sys.seed);
+  const sunDist = 220 + (r.next() % 80);            // 220..300 units
+  const sunOffset = ((r.next() % 200) - 100) / 100; // -1..1
+  // Planet sits between player and sun, off to one side.
+  const planetDist = 60 + (r.next() % 30);
+  const planetSide = ((r.next() % 200) - 100) / 100;
+  const planetUp   = ((r.next() % 100) - 50) / 100;
+
+  // Pre-bake a simple surface pattern: a list of (azimuth, elevation,
+  // brightness) speckles on the planet's surface. We project these every
+  // frame as the player flies past.
+  const speckleCount = Math.min(32, Math.floor(sys.population*2 + 8));
+  const surface = [];
+  for(let i=0;i<speckleCount;i++){
+    const az = (r.next() % 10000) / 10000 * Math.PI * 2;
+    const el = ((r.next() % 10000) / 10000 - 0.5) * Math.PI;
+    const br = 0.6 + (r.next() % 100)/100 * 0.35;
+    surface.push({ az, el, br });
+  }
+
+  return {
+    sun: { pos: [sunOffset * 30, 25, sunDist] },
+    planet: {
+      pos: [planetSide * 25, planetUp * 10, planetDist],
+      // Planet radius is system.radius / 800 (the chart's km value squashed
+      // into a few units of world space — visually we want planets in the
+      // 5..12 unit range).
+      radius: 5 + sys.radius / 1500,
+      sys,
+      surface,
+    },
+  };
+}
+
 const FOV_FLIGHT = 380;
 const FLIGHT_CELL = 8;
 
 function renderFlight(state, theme, dt){
+  // Maintain system bodies in sync with current system.
+  const seedKey = state.currentSystemSeed ? state.currentSystemSeed.join(',') : null;
+  if(seedKey !== systemBodiesSeed){
+    systemBodiesSeed = seedKey;
+    if(state.currentSystemSeed){
+      const sys = findSystemBySeed(state.galaxies, state.currentSystemSeed);
+      systemBodies = sys ? buildSystemBodies(sys) : null;
+    } else {
+      systemBodies = null;
+    }
+  }
+
   const W=innerWidth, H=innerHeight;
   const cols=Math.ceil(W/FLIGHT_CELL), rows=Math.ceil(H/FLIGHT_CELL);
 
@@ -1112,6 +1174,8 @@ function renderFlight(state, theme, dt){
   const gStars = new Float32Array(cols*rows);
   const gDust  = new Float32Array(cols*rows);
   const gFrame = new Float32Array(cols*rows);
+  const gPlanet = new Float32Array(cols*rows);
+  const gSun = new Float32Array(cols*rows);
 
   // Stars
   for(const s of stars){
@@ -1123,6 +1187,98 @@ function renderFlight(state, theme, dt){
     if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
     const idx = gy*cols+gx;
     if(s.mag > gStars[idx]) gStars[idx] = s.mag;
+  }
+
+  // Sun (if in a system) — a single bright point with a halo around it.
+  if(systemBodies){
+    const sunWorld = [
+      systemBodies.sun.pos[0] - state.ship.position[0],
+      systemBodies.sun.pos[1] - state.ship.position[1],
+      systemBodies.sun.pos[2] - state.ship.position[2],
+    ];
+    const cam = qRotate(invOrient, sunWorld);
+    if(cam[2] > 0.5){
+      const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
+      const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+      const cx = Math.round(px/FLIGHT_CELL), cy = Math.round(py/FLIGHT_CELL);
+      // Halo radius depends on distance — bright but compact when far,
+      // huge corona when near.
+      const sunDist = vLength(sunWorld);
+      const haloRadius = Math.max(2, Math.min(14, 600 / sunDist));
+      for(let dy=-Math.ceil(haloRadius); dy<=Math.ceil(haloRadius); dy++){
+        for(let dx=-Math.ceil(haloRadius); dx<=Math.ceil(haloRadius); dx++){
+          const d = Math.hypot(dx, dy);
+          if(d > haloRadius) continue;
+          const gx = cx+dx, gy = cy+dy;
+          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+          const v = Math.exp(-d / Math.max(1, haloRadius*0.4));
+          const idx = gy*cols+gx;
+          if(v > gSun[idx]) gSun[idx] = v;
+        }
+      }
+    }
+  }
+
+  // Planet (if in a system) — a disc with surface speckles.
+  if(systemBodies){
+    const pWorld = [
+      systemBodies.planet.pos[0] - state.ship.position[0],
+      systemBodies.planet.pos[1] - state.ship.position[1],
+      systemBodies.planet.pos[2] - state.ship.position[2],
+    ];
+    const cam = qRotate(invOrient, pWorld);
+    if(cam[2] > 0.5){
+      const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
+      const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+      const cx = Math.round(px/FLIGHT_CELL), cy = Math.round(py/FLIGHT_CELL);
+      const screenRadius = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / FLIGHT_CELL;
+      // Limb circle
+      if(screenRadius > 1){
+        const limbSteps = Math.max(16, screenRadius * 6);
+        for(let i=0;i<limbSteps;i++){
+          const a = (i / limbSteps) * Math.PI * 2;
+          const gx = Math.round(cx + Math.cos(a) * screenRadius);
+          const gy = Math.round(cy + Math.sin(a) * screenRadius);
+          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+          const lightDot = -Math.cos(a)*0.7 - Math.sin(a)*0.7;
+          const v = 0.55 + lightDot*0.4;
+          const idx = gy*cols+gx;
+          if(v > gPlanet[idx]) gPlanet[idx] = v;
+        }
+        // Surface speckles. We treat each surface (az, el) point as a
+        // position on the planet's sphere at radius 1, project it, and
+        // only show it if it's on the near side (z > 0 in camera-relative
+        // planet space).
+        for(const sp of systemBodies.planet.surface){
+          // Rotate the surface point to its position in camera space,
+          // ignoring the planet's own rotation for now (could add later).
+          const sx = Math.cos(sp.el) * Math.cos(sp.az);
+          const sy = Math.sin(sp.el);
+          const sz = Math.cos(sp.el) * Math.sin(sp.az);
+          // This point is on the planet's surface; offset by planet center
+          // in camera space, then project. We're approximating: surface
+          // points are added as offsets in camera-aligned axes rather than
+          // a fully oriented sphere, but the visual is close enough for
+          // distant planets.
+          if(sz < 0) continue;       // far side
+          const wx = cam[0] + sx * systemBodies.planet.radius;
+          const wy = cam[1] + sy * systemBodies.planet.radius;
+          const wz = cam[2] + sz * systemBodies.planet.radius * 0.5;
+          if(wz < 0.5) continue;
+          const ppx = (wx * FOV_FLIGHT) / wz + W/2;
+          const ppy = (-wy * FOV_FLIGHT) / wz + H/2;
+          const gx = Math.round(ppx/FLIGHT_CELL), gy = Math.round(ppy/FLIGHT_CELL);
+          if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+          const idx = gy*cols+gx;
+          if(sp.br > gPlanet[idx]) gPlanet[idx] = sp.br;
+        }
+      } else if(screenRadius > 0.3){
+        // Distant planet: just a single bright point.
+        if(cx>=0&&cx<cols&&cy>=0&&cy<rows){
+          gPlanet[cy*cols+cx] = 0.85;
+        }
+      }
+    }
   }
 
   // Dust
@@ -1143,7 +1299,6 @@ function renderFlight(state, theme, dt){
     const v = Math.max(0.2, Math.min(1, 1 - cam[2]/DUST_RANGE));
     const idx = gy*cols+gx;
     if(v > gDust[idx]) gDust[idx] = v;
-    // Streaks
     if(state.ship.speed > 5){
       const tf = Math.min(1, state.ship.speed/TUNING.maxSpeed);
       const back = [
@@ -1196,9 +1351,11 @@ function renderFlight(state, theme, dt){
   plotLine(ccx*FLIGHT_CELL, (ccy+gap)*FLIGHT_CELL, ccx*FLIGHT_CELL, (ccy+arm+gap)*FLIGHT_CELL, 0.95);
 
   const layers=[
-    { name:'stars', grid:gStars, color:resolveColor(theme.hues.system) },
-    { name:'dust',  grid:gDust,  color:resolveColor(theme.hues.dust) },
-    { name:'frame', grid:gFrame, color:resolveColor(theme.hues.frame) },
+    { name:'stars',  grid:gStars,  color:resolveColor(theme.hues.system) },
+    { name:'sun',    grid:gSun,    color:resolveColor(theme.hues.warn) },
+    { name:'planet', grid:gPlanet, color:resolveColor(theme.hues.planet) },
+    { name:'dust',   grid:gDust,   color:resolveColor(theme.hues.dust) },
+    { name:'frame',  grid:gFrame,  color:resolveColor(theme.hues.frame) },
   ];
   renderLayers(layers, FLIGHT_CELL, cols, rows, W, H);
 
