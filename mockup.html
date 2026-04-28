@@ -234,8 +234,9 @@
     bg: ['g','+','*','.', ':','\'',',','&','%','~','·',';',':',':','o','`'],
     // Stars at world scale — use small twinkly chars.
     star: ['·','*','+',':',"'", '·', '·'],
-    // Dust streaks — slope-tinted but with variety per cell.
-    dust: ['─','│','╲','╱','-','=',':','·',',',';'],
+    // Dust streaks — small specks only, no slashes. Streak motion reads
+    // from cells-in-a-row + frame-to-frame movement, not from glyph slope.
+    dust: ['·','·','·','·',"'",',',':',';','`','°','*','·'],
     // Planet body — varied texture letters/digits for surface.
     planetBody: ['o','O','0','D','c','d','b','B',':',';',',','.', "'", "·",'*','%','&','@','#','+'],
     // Planet limb/edge curve indicators — slightly more "shape" chars.
@@ -438,14 +439,15 @@
     return buckets[name];
   }
 
-  /* ---------- a "layer" carries its own cell size and grid ---------- */
-  function makeLayer(name, kind, hueRef, cell, W, H) {
+  /* ---------- a "layer" carries its own cell size, grid, and bloom mul ---------- */
+  function makeLayer(name, kind, hueRef, cell, W, H, bloomMul = 1) {
     const cols = Math.ceil(W / cell);
     const rows = Math.ceil(H / cell);
     return {
       name, kind, hueRef, cell, cols, rows,
       intensity: new Float32Array(cols * rows),
       chars: new Array(cols * rows).fill(null),
+      bloomMul,
     };
   }
 
@@ -500,14 +502,16 @@
     /* ============================================================
        LAYER ALLOCATION
        ============================================================ */
-    const lBg        = makeLayer('bg',        'world', 'bg',     wCell, W, H);
-    const lPlanet    = makeLayer('planet',    'world', 'planet', wCell, W, H);
-    const lPlanetAcc = makeLayer('planetAcc', 'world', 'planetAcc', wCell, W, H);
-    const lDust      = makeLayer('dust',      'world', 'dust',   wCell, W, H);
-    const lHull      = makeLayer('hull',      'world', 'hull',   wCell, W, H);
-    const lHullAcc   = makeLayer('hullAcc',   'world', 'hullAcc', wCell, W, H);
-    const lFrame     = makeLayer('frame',     'inst',  'frame',  iCell, W, H);
-    const lDash      = makeLayer('dash',      'inst',  'dash',   iCell, W, H);
+    // bloomMul boosts the bloom intensity for "atmospheric" objects —
+    // the planet glows more than a wireframe ship would.
+    const lBg        = makeLayer('bg',        'world', 'bg',        wCell, W, H);
+    const lPlanet    = makeLayer('planet',    'world', 'planet',    wCell, W, H, 1.6);
+    const lPlanetAcc = makeLayer('planetAcc', 'world', 'planetAcc', wCell, W, H, 1.6);
+    const lDust      = makeLayer('dust',      'world', 'dust',      wCell, W, H);
+    const lHull      = makeLayer('hull',      'world', 'hull',      wCell, W, H);
+    const lHullAcc   = makeLayer('hullAcc',   'world', 'hullAcc',   wCell, W, H);
+    const lFrame     = makeLayer('frame',     'inst',  'frame',     iCell, W, H);
+    const lDash      = makeLayer('dash',      'inst',  'dash',      iCell, W, H);
 
     /* ============================================================
        1. BACKGROUND ATMOSPHERE — DISABLED for space scenes.
@@ -638,7 +642,9 @@
         const close = 1 - Math.max(0, Math.min(1, (camZ - d.z) / 6));
         const x1 = sp[0]/lDust.cell, y1 = sp[1]/lDust.cell;
         const x2 = sp2[0]/lDust.cell, y2 = sp2[1]/lDust.cell;
-        const ch = (gx, gy, ddx, ddy) => slopeCharVaried(ddx, ddy, gx, gy, 31);
+        // Small specks only — dust reads as motion via cells-in-a-row +
+        // per-frame movement, not via slash characters.
+        const ch = (gx, gy) => pPick(gx, gy, 31, G.dust);
         plotLine(lDust, x1, y1, x2, y2, 0.35 + close * 0.6, ch);
       }
     }
@@ -877,7 +883,8 @@
           b.ctx.fillText(ch, x, y);
         }
       }
-      // Bloom
+      // Bloom — per-layer intensity via bloomMul so atmospheric objects
+      // (the planet) glow more than wireframe objects (the ship).
       if (state.glow > 0.01) {
         ctx.globalCompositeOperation = 'lighter';
         const passes = [
@@ -889,9 +896,10 @@
         for (const L of layers) {
           const b = getBucket(L.name);
           if (!b.canvas.width || !b.canvas.height) continue;
+          const mul = L.bloomMul || 1;
           for (const p of passes) {
             ctx.filter = `blur(${p.blur}px)`;
-            ctx.globalAlpha = p.alpha * state.glow;
+            ctx.globalAlpha = Math.min(1, p.alpha * state.glow * mul);
             ctx.drawImage(b.canvas, 0, 0, W, H);
           }
         }
@@ -901,9 +909,32 @@
       }
     }
 
+    // Cockpit mask — black-out everything outside the canopy trapezoid
+    // BEFORE drawing instruments. Otherwise gauges and frame edges sit
+    // on top of bright planet/hull content and become unreadable.
+    function drawCockpitMask() {
+      const inset = 12;
+      const dashTop = H * 0.72;
+      ctx.save();
+      ctx.fillStyle = 'rgba(2, 3, 10, 1)';
+      ctx.beginPath();
+      // Outer rectangle = whole screen
+      ctx.rect(0, 0, W, H);
+      // Inner cutout = canopy trapezoid (clockwise so even-odd cuts it out)
+      ctx.moveTo(inset, inset);
+      ctx.lineTo(W - inset, inset);
+      ctx.lineTo(W - inset - W * 0.10, dashTop);
+      ctx.lineTo(inset + W * 0.10, dashTop);
+      ctx.closePath();
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
+
     // World group renders first (back to front: bg, planet, planetAcc, dust, hull, hullAcc).
     renderGroup([lBg, lPlanet, lPlanetAcc, lDust, lHull, lHullAcc], wCell);
-    // Instrument group renders on top.
+    // Mask the cockpit body so instruments don't fight the world for legibility.
+    if (state.style === 'proposed') drawCockpitMask();
+    // Instrument group renders on top of the mask.
     renderGroup([lFrame, lDash], iCell);
 
     /* ---------- HUD text labels (drawn directly with bloom) ---------- */
