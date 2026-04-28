@@ -88,15 +88,15 @@
   /* Hero cell: planet on the left, name + coordinates on the right. */
   #info .hero {
     display: grid;
-    grid-template-columns: 76px 1fr;
-    gap: 14px;
+    grid-template-columns: 88px 1fr;
+    gap: 16px;
     align-items: center;
     border-right: 1px solid var(--border);
     padding-right: 20px;
     min-width: 0;
   }
   #info .planet {
-    width: 72px; height: 72px;
+    width: 84px; height: 84px;
     position: relative;
   }
   #info .planet canvas {
@@ -105,12 +105,14 @@
   }
   #info .hero-text { min-width: 0; }
   #info h2 {
-    margin: 0 0 6px;
+    margin: 0 0 8px;
     color: var(--accent);
-    font-size: 22px;
-    letter-spacing: 0.12em;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    text-shadow: 0 0 8px var(--accent);
+    text-shadow: 0 0 12px var(--accent);
+    line-height: 1;
     /* Long names truncate with ellipsis instead of pushing the layout. */
     white-space: nowrap;
     overflow: hidden;
