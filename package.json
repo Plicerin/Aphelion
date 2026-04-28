@@ -1,0 +1,17 @@
+{
+  "name": "aphelion",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "A glowing-ASCII space trading game.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APHELION — Galactic Chart</title>
+<style>
+  :root {
+    --bg: #02030a;
+    --panel: rgba(10, 16, 32, 0.78);
+    --border: rgba(120, 200, 255, 0.22);
+    --ink: #cfe7ff;
+    --muted: #6b7a99;
+    --accent: #7cf7ff;
+    --warn: #ffb84a;
+  }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+    height: 100%;
+  }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 3px);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #stage { position: fixed; inset: 0; display: block; z-index: 1; cursor: crosshair; }
+
+  #title {
+    position: fixed;
+    top: 14px; left: 0; right: 0;
+    z-index: 6;
+    text-align: center;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.5em;
+    text-transform: uppercase;
+    text-shadow: 0 0 8px var(--accent);
+    pointer-events: none;
+  }
+  #title .sub {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-shadow: none;
+  }
+
+  #info {
+    position: fixed;
+    bottom: 16px; left: 16px;
+    z-index: 6;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    width: 280px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  #info h2 {
+    margin: 0 0 4px;
+    color: var(--accent);
+    font-size: 14px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    text-shadow: 0 0 6px var(--accent);
+  }
+  #info .row { display: flex; justify-content: space-between; margin: 3px 0; }
+  #info .lbl { color: var(--muted); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
+  #info .v { color: var(--ink); font-variant-numeric: tabular-nums; }
+  #info .v.warn { color: var(--warn); }
+
+  #legend {
+    position: fixed;
+    bottom: 16px; right: 16px;
+    z-index: 6;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-align: right;
+    line-height: 1.6;
+  }
+  #legend strong { color: var(--accent); font-weight: 600; }
+
+  #galaxy-tabs {
+    position: fixed;
+    top: 14px; right: 14px;
+    z-index: 6;
+    display: flex;
+    gap: 3px;
+  }
+  #galaxy-tabs button {
+    width: 26px; height: 22px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  #galaxy-tabs button:hover { color: var(--accent); background: rgba(124, 247, 255, 0.05); }
+  #galaxy-tabs button.on {
+    background: var(--accent);
+    color: #02030a;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <div id="title">
+    APHELION
+    <div class="sub">GALACTIC CHART · GALAXY <span id="galaxyNum">1</span></div>
+  </div>
+
+  <div id="galaxy-tabs"></div>
+
+  <div id="info">
+    <h2 id="sysName">—</h2>
+    <div class="row"><span class="lbl">Coordinates</span><span class="v" id="sysCoords">—</span></div>
+    <div class="row"><span class="lbl">Economy</span><span class="v" id="sysEcon">—</span></div>
+    <div class="row"><span class="lbl">Government</span><span class="v" id="sysGov">—</span></div>
+    <div class="row"><span class="lbl">Tech Level</span><span class="v" id="sysTech">—</span></div>
+    <div class="row"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
+    <div class="row"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
+    <div class="row"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
+  </div>
+
+  <div id="legend">MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY</div>
+
+<script type="module">
+/* ============================================================================
+   APHELION — Galactic Chart
+   ----------------------------------------------------------------------------
+   Inlined module: galaxy generator + glowing-ASCII renderer.
+   Real production code lives in src/galaxy/; this file mirrors that logic
+   so the chart can ship as a single HTML file with no build step.
+   ============================================================================ */
+
+/* ---- types implicit; this is the JS shape we'd produce from TS ---- */
+
+const SYLLABLES = [
+  'AR', 'EN', 'TI', 'OS', 'EX', 'AL', 'IR', 'AN',
+  'OR', 'EL', 'US', 'IS', 'AT', 'ON', 'IL', 'EM',
+  'XO', 'VE', 'RI', 'KA', 'ME', 'TU', 'ZA', 'GE',
+  'NO', 'LA', 'CE', 'PI', 'SO', 'DA', 'BE', 'HE',
+];
+const ECONOMIES = [
+  'Rich Industrial', 'Average Industrial', 'Poor Industrial', 'Mainly Industrial',
+  'Mainly Agricultural', 'Rich Agricultural', 'Average Agricultural', 'Poor Agricultural',
+];
+const GOVERNMENTS = [
+  'Anarchy', 'Feudal', 'Multi-Government', 'Dictatorship',
+  'Communist', 'Confederacy', 'Democracy', 'Corporate State',
+];
+
+const APHELION_SEED = [0x5a4a, 0x0248, 0xb753];
+const MASK_16 = 0xffff;
+
+function twistOnce([s0, s1, s2]) {
+  return [s1, s2, (s0 + s1 + s2) & MASK_16];
+}
+
+function rotateGalaxy(triple) {
+  return triple.map(n => {
+    const hi = (n >> 8) & 0xff, lo = n & 0xff;
+    const hiR = ((hi << 1) | (hi >> 7)) & 0xff;
+    const loR = ((lo << 1) | (lo >> 7)) & 0xff;
+    return (hiR << 8) | loR;
+  });
+}
+
+function nameFromSeed([s0, s1, s2]) {
+  const idx = [
+    (s1 >> 8) & 0x1f, s1 & 0x1f,
+    (s2 >> 8) & 0x1f, s2 & 0x1f,
+  ];
+  const lenBits = s0 & 0x3;
+  const count = lenBits === 0 ? 2 : lenBits === 3 ? 4 : 3;
+  let name = '';
+  for (let i = 0; i < count; i++) name += SYLLABLES[idx[i]];
+  return name.charAt(0) + name.slice(1).toLowerCase();
+}
+
+function systemFromSeed(seed, index) {
+  const [s0, s1, s2] = seed;
+  const x = (s0 >> 8) & 0xff;
+  const y = (s0 & 0xff) >> 1;
+
+  let econIdx = (s2 >> 8) & 0x7;
+  if (y > 96 && econIdx < 4) econIdx += 4;
+  if (y < 32 && econIdx >= 4) econIdx -= 4;
+
+  const govIdx = (s1 >> 11) & 0x7;
+  const wealthScore = econIdx < 4 ? 4 - econIdx : econIdx - 3;
+  const stability = govIdx;
+  const noise = (s2 & 0x3) + 1;
+  const techLevel = Math.min(15, Math.max(1, stability + wealthScore + noise));
+  const population = (techLevel * 4 + stability + econIdx) / 10;
+  const productivity = ((stability + 3) * (wealthScore + 4) * 8 + techLevel * 100) | 0;
+  const radius = 4000 + (((s2 >> 8) & 0xf) * 256) + (s1 & 0xff);
+
+  return {
+    index,
+    name: nameFromSeed(seed),
+    x, y,
+    economy: ECONOMIES[econIdx],
+    government: GOVERNMENTS[govIdx],
+    techLevel,
+    population: Math.round(population * 10) / 10,
+    productivity,
+    radius,
+    seed,
+  };
+}
+
+function generateGalaxy(startSeed) {
+  const systems = [];
+  let cur = startSeed;
+  for (let i = 0; i < 256; i++) {
+    cur = twistOnce(cur);
+    systems.push(systemFromSeed(cur, i));
+  }
+  return systems;
+}
+
+function generateAllGalaxies() {
+  const out = [];
+  let seed = APHELION_SEED;
+  for (let g = 0; g < 8; g++) {
+    out.push(generateGalaxy(seed));
+    seed = rotateGalaxy(seed);
+  }
+  return out;
+}
+
+/* ============================================================================
+   Renderer — same glowing-ASCII pipeline as before, applied to the chart.
+   ============================================================================ */
+
+const stage = document.getElementById('stage');
+const ctx = stage.getContext('2d', { alpha: false });
+
+const state = {
+  galaxies: generateAllGalaxies(),
+  galaxyIdx: 0,
+  cursor: { x: 128, y: 64 },          // chart-space coordinates (0..255, 0..127)
+  selected: null,                     // index of the selected (nearest) system
+  t: 0,
+  glow: 0.7,
+  cellSize: 9,                        // px per glyph
+};
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.floor(innerWidth * dpr));
+  const h = Math.max(1, Math.floor(innerHeight * dpr));
+  stage.width = w; stage.height = h;
+  stage.style.width = innerWidth + 'px';
+  stage.style.height = innerHeight + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ---- coordinate mapping: chart space -> screen space ----
+   The chart fills the screen but with margins for title and info panel. */
+function chartBounds() {
+  const marginTop = 80;
+  const marginBottom = 80;
+  const marginX = 80;
+  return {
+    x0: marginX,
+    y0: marginTop,
+    x1: innerWidth - marginX,
+    y1: innerHeight - marginBottom,
+  };
+}
+function chartToScreen(cx, cy) {
+  const b = chartBounds();
+  return [
+    b.x0 + (cx / 255) * (b.x1 - b.x0),
+    b.y0 + (cy / 127) * (b.y1 - b.y0),
+  ];
+}
+function screenToChart(sx, sy) {
+  const b = chartBounds();
+  return [
+    Math.max(0, Math.min(255, ((sx - b.x0) / (b.x1 - b.x0)) * 255)),
+    Math.max(0, Math.min(127, ((sy - b.y0) / (b.y1 - b.y0)) * 127)),
+  ];
+}
+
+/* ---- input ---- */
+addEventListener('mousemove', e => {
+  const [cx, cy] = screenToChart(e.clientX, e.clientY);
+  state.cursor.x = cx;
+  state.cursor.y = cy;
+});
+addEventListener('keydown', e => {
+  const step = 4;
+  if (e.key === 'ArrowLeft')  state.cursor.x = Math.max(0, state.cursor.x - step);
+  if (e.key === 'ArrowRight') state.cursor.x = Math.min(255, state.cursor.x + step);
+  if (e.key === 'ArrowUp')    state.cursor.y = Math.max(0, state.cursor.y - step);
+  if (e.key === 'ArrowDown')  state.cursor.y = Math.min(127, state.cursor.y + step);
+  if (e.key >= '1' && e.key <= '8') setGalaxy(parseInt(e.key, 10) - 1);
+});
+
+/* ---- galaxy tabs ---- */
+const tabs = document.getElementById('galaxy-tabs');
+for (let i = 0; i < 8; i++) {
+  const b = document.createElement('button');
+  b.textContent = (i + 1).toString();
+  if (i === 0) b.classList.add('on');
+  b.addEventListener('click', () => setGalaxy(i));
+  tabs.appendChild(b);
+}
+function setGalaxy(idx) {
+  state.galaxyIdx = idx;
+  document.querySelectorAll('#galaxy-tabs button').forEach((b, i) => {
+    b.classList.toggle('on', i === idx);
+  });
+  document.getElementById('galaxyNum').textContent = (idx + 1).toString();
+}
+
+/* ---- offscreen color buckets for clean per-color bloom ---- */
+const buckets = {};
+function getBucket(name) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.max(1, stage.width || Math.floor(innerWidth * dpr));
+  const h = Math.max(1, stage.height || Math.floor(innerHeight * dpr));
+  if (!buckets[name] || buckets[name].canvas.width !== w || buckets[name].canvas.height !== h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const cx = c.getContext('2d');
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buckets[name] = { canvas: c, ctx: cx };
+  }
+  return buckets[name];
+}
+
+const ramp = " .·:-=+*#%@█";
+
+/* ---- nearest-system lookup ---- */
+function nearestSystem(cx, cy) {
+  const systems = state.galaxies[state.galaxyIdx];
+  let best = null, bestD = Infinity;
+  for (const s of systems) {
+    const dx = s.x - cx, dy = s.y - cy;
+    const d = dx*dx + dy*dy;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
+/* ---- main render loop ---- */
+let last = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  state.t += dt;
+
+  const W = innerWidth, H = innerHeight;
+  const cell = state.cellSize;
+  const cols = Math.ceil(W / cell);
+  const rows = Math.ceil(H / cell);
+
+  ctx.fillStyle = 'rgba(2, 3, 10, 1)';
+  ctx.fillRect(0, 0, W, H);
+
+  // separate intensity grids: one per color bucket
+  const gSystem = new Float32Array(cols * rows);   // unselected systems
+  const gSelected = new Float32Array(cols * rows); // the system under the cursor
+  const gCursor = new Float32Array(cols * rows);   // crosshair
+  const gGrid = new Float32Array(cols * rows);     // chart background grid
+
+  /* --- chart background grid (very dim) --- */
+  const b = chartBounds();
+  // dotted vertical lines every 32 chart units
+  for (let cx = 0; cx <= 255; cx += 32) {
+    const [sx] = chartToScreen(cx, 0);
+    const gx = Math.round(sx / cell);
+    for (let gy = Math.floor(b.y0 / cell); gy < Math.ceil(b.y1 / cell); gy += 2) {
+      if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+        gGrid[gy * cols + gx] = 0.18;
+      }
+    }
+  }
+  for (let cy = 0; cy <= 127; cy += 16) {
+    const [, sy] = chartToScreen(0, cy);
+    const gy = Math.round(sy / cell);
+    for (let gx = Math.floor(b.x0 / cell); gx < Math.ceil(b.x1 / cell); gx += 2) {
+      if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+        gGrid[gy * cols + gx] = 0.18;
+      }
+    }
+  }
+
+  /* --- find nearest system to cursor --- */
+  const nearest = nearestSystem(state.cursor.x, state.cursor.y);
+  state.selected = nearest;
+
+  /* --- plot all systems --- */
+  const systems = state.galaxies[state.galaxyIdx];
+  for (const sys of systems) {
+    const [sx, sy] = chartToScreen(sys.x, sys.y);
+    const gx = Math.round(sx / cell);
+    const gy = Math.round(sy / cell);
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+
+    // System brightness scales with tech level — a tiny visual hint
+    // about which systems are advanced. tech 1 -> 0.45, tech 15 -> 0.95.
+    const brightness = 0.45 + (sys.techLevel / 15) * 0.5;
+
+    const isSelected = sys === nearest;
+    const grid = isSelected ? gSelected : gSystem;
+    const idx = gy * cols + gx;
+    if (brightness > grid[idx]) grid[idx] = brightness;
+
+    // selected system gets a faint halo of nearby cells too
+    if (isSelected) {
+      for (const [ox, oy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+        const x = gx + ox, y = gy + oy;
+        if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
+        const v = 0.55 + 0.2 * Math.sin(state.t * 4);
+        if (v > gSelected[y * cols + x]) gSelected[y * cols + x] = v;
+      }
+    }
+  }
+
+  /* --- cursor crosshair --- */
+  if (nearest) {
+    const [sx, sy] = chartToScreen(nearest.x, nearest.y);
+    const gx = Math.round(sx / cell);
+    const gy = Math.round(sy / cell);
+    const armLen = 4;
+    const gap = 2;
+    const pulse = 0.7 + 0.3 * Math.sin(state.t * 6);
+    for (let i = gap; i <= gap + armLen; i++) {
+      const cells = [
+        [gx - i, gy], [gx + i, gy],
+        [gx, gy - i], [gx, gy + i],
+      ];
+      for (const [x, y] of cells) {
+        if (x < 0 || x >= cols || y < 0 || y >= rows) continue;
+        const idx = y * cols + x;
+        // Cursor brightness fades from inner to outer
+        const fade = 1 - ((i - gap) / armLen) * 0.5;
+        const v = pulse * fade;
+        if (v > gCursor[idx]) gCursor[idx] = v;
+      }
+    }
+  }
+
+  /* --- render: pick brightest grid per cell, draw to bucket --- */
+  const layers = [
+    { name: 'grid',    grid: gGrid,     hue: 195 },
+    { name: 'system',  grid: gSystem,   hue: 195 },
+    { name: 'selected',grid: gSelected, hue: 38  },
+    { name: 'cursor',  grid: gCursor,   hue: 38  },
+  ];
+  for (const L of layers) {
+    const b = getBucket(L.name);
+    b.ctx.clearRect(0, 0, W, H);
+    b.ctx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+    b.ctx.textBaseline = 'middle';
+    b.ctx.textAlign = 'center';
+  }
+  ctx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+
+  for (let gy = 0; gy < rows; gy++) {
+    for (let gx = 0; gx < cols; gx++) {
+      const idx = gy * cols + gx;
+      let bestV = 0, bestL = null;
+      for (const L of layers) {
+        if (L.grid[idx] > bestV) { bestV = L.grid[idx]; bestL = L; }
+      }
+      if (bestV < 0.06) continue;
+      const ch = ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
+      const x = gx * cell + cell / 2, y = gy * cell + cell / 2;
+      const hue = bestL.hue;
+      const light = 50 + bestV * 38;
+
+      ctx.fillStyle = `hsl(${hue}, 90%, ${light}%)`;
+      ctx.fillText(ch, x, y);
+
+      const buck = getBucket(bestL.name);
+      buck.ctx.fillStyle = `hsl(${hue}, 95%, ${Math.min(95, light + 18)}%)`;
+      buck.ctx.fillText(ch, x, y);
+    }
+  }
+
+  /* --- bloom passes per bucket --- */
+  if (state.glow > 0.01) {
+    ctx.globalCompositeOperation = 'lighter';
+    const passes = [
+      { blur: 2,  alpha: 0.65 },
+      { blur: 6,  alpha: 0.55 },
+      { blur: 16, alpha: 0.45 },
+      { blur: 36, alpha: 0.30 },
+    ];
+    for (const L of layers) {
+      const buck = getBucket(L.name);
+      if (!buck.canvas.width || !buck.canvas.height) continue;
+      for (const p of passes) {
+        ctx.filter = `blur(${p.blur}px)`;
+        ctx.globalAlpha = p.alpha * state.glow;
+        ctx.drawImage(buck.canvas, 0, 0, W, H);
+      }
+    }
+    ctx.filter = 'none';
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* --- update info panel --- */
+  if (nearest) {
+    document.getElementById('sysName').textContent = nearest.name;
+    document.getElementById('sysCoords').textContent = `${nearest.x}, ${nearest.y}`;
+    document.getElementById('sysEcon').textContent = nearest.economy;
+    document.getElementById('sysGov').textContent = nearest.government;
+    const techEl = document.getElementById('sysTech');
+    techEl.textContent = nearest.techLevel.toString();
+    techEl.classList.toggle('warn', nearest.techLevel < 4);
+    document.getElementById('sysPop').textContent = `${nearest.population.toFixed(1)} B`;
+    document.getElementById('sysProd').textContent = nearest.productivity.toLocaleString();
+    document.getElementById('sysRad').textContent = `${nearest.radius.toLocaleString()} km`;
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
