@@ -52,7 +52,7 @@ describe('themes', () => {
 
   it('getTheme returns the requested theme', () => {
     expect(getTheme('phosphor').id).toBe('phosphor');
-    expect(getTheme('amber').name).toBe('Amber');
+    expect(getTheme('amber').name).toBe('Amber Monochrome');
   });
 
   it('getTheme falls back to default for unknown ids', () => {

@@ -71,7 +71,7 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'phosphor',
-    name: 'Phosphor',
+    name: 'Green Phosphor',
     description: 'Green CRT — the look of the original 8-bit space sims.',
     hues: {
       hull: 110, cockpit: 75, engine: 50, laser: 140,
@@ -82,8 +82,8 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'amber',
-    name: 'Amber',
-    description: 'Warm monochrome, like an old monitor at 3 AM.',
+    name: 'Amber Monochrome',
+    description: 'Warm single-hue, like an old monitor at 3 AM.',
     hues: {
       hull: 38, cockpit: 30, engine: 12, laser: 50,
       planet: 38, dust: 45, frame: 38, dash: 30,
@@ -93,8 +93,8 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'ember',
-    name: 'Ember',
-    description: 'Cyan ship, warm dashboard. Per-part coloring at its best.',
+    name: 'Cyan & Amber',
+    description: 'Cyan ship, warm amber HUD. The classic cockpit look.',
     hues: {
       hull: 195, cockpit: 195, engine: 18, laser: 0,
       planet: 28, dust: 210, frame: 195, dash: 28,
@@ -104,7 +104,7 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'plasma',
-    name: 'Plasma',
+    name: 'Magenta Synthwave',
     description: 'Synthwave magentas and violets. Use sparingly.',
     hues: {
       hull: 290, cockpit: 320, engine: 280, laser: 60,
@@ -115,37 +115,21 @@ export const THEMES: readonly Theme[] = [
   },
   {
     id: 'spectrum',
-    name: 'Spectrum',
-    description: 'Full color — every role rendered in its natural hue.',
+    name: 'Full Color',
+    description: 'Every role rendered in its natural hue.',
     hues: {
-      // Hull: cool steel grey-blue, low saturation. Real ships aren't neon.
       hull:     { h: 210, s: 25, l: 75 },
-      // Cockpit canopy: faintly tinted blue-green glass.
       cockpit:  { h: 175, s: 40, l: 70 },
-      // Engine plasma: hot orange-red, hyper-saturated. The dramatic bit.
       engine:   { h:  18, s: 95, l: 60 },
-      // Laser fire: classic sci-fi pink-red, high saturation.
       laser:    { h: 340, s: 95, l: 65 },
-      // Planet: depends on the system, but our default render is a cool
-      // earth-like blue-green. (Future: tint by economy — agri = green,
-      // industrial = grey-brown.)
       planet:   { h: 195, s: 55, l: 60 },
-      // Dust: pale white-blue, like sunlit particles.
       dust:     { h: 210, s: 15, l: 88 },
-      // Cockpit frame: dim warm metal, structural.
       frame:    { h:  30, s: 20, l: 60 },
-      // Dashboard readouts: classic green CRT — what you'd actually see
-      // through a cockpit's instrument cluster, regardless of hull paint.
       dash:     { h: 130, s: 75, l: 60 },
-      // Chart system markers: warm white, like distant stars.
       system:   { h:  50, s: 25, l: 85 },
-      // Selected/cursor: amber, the universal "look here" color.
       selected: { h:  38, s: 95, l: 65 },
-      // Grid lines: very dim cool blue, recedes into the background.
       grid:     { h: 210, s: 30, l: 50 },
-      // Accent: the warm amber of cockpit hardware.
       accent:   { h:  38, s: 90, l: 65 },
-      // Warning: high-saturation red. Unmissable.
       warn:     { h:   0, s: 95, l: 60 },
     },
   },

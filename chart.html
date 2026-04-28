@@ -121,82 +121,95 @@
     font-weight: 700;
   }
 
-  /* ---- theme picker ---- */
+  /* ---- theme picker (dropdown) ---- */
   #theme-picker {
     position: fixed;
     top: 14px; left: 14px;
     z-index: 6;
+    font-size: 11px;
+  }
+  #theme-button {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     background: var(--panel);
     backdrop-filter: blur(10px) saturate(140%);
     -webkit-backdrop-filter: blur(10px) saturate(140%);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 5px 8px;
+    padding: 6px 10px;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    min-width: 180px;
+    transition: border-color 0.15s;
   }
-  #theme-picker .label {
+  #theme-button:hover { border-color: var(--accent); }
+  #theme-button .label {
     color: var(--muted);
     font-size: 9px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
   }
-  #theme-picker .swatches {
-    display: flex;
-    gap: 3px;
+  #theme-button .name { flex: 1; }
+  #theme-button .chevron {
+    color: var(--muted);
+    font-size: 9px;
+    transition: transform 0.15s;
   }
-  #theme-picker .swatch {
-    width: 16px; height: 16px;
-    border-radius: 3px;
-    border: 1px solid rgba(255,255,255,0.15);
-    cursor: pointer;
-    transition: transform 0.1s, border-color 0.15s;
-    position: relative;
+  #theme-picker.open #theme-button .chevron { transform: rotate(180deg); }
+
+  #theme-menu {
+    margin-top: 4px;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    display: none;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  #theme-picker.open #theme-menu { display: block; }
+  #theme-menu .item {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-family: inherit;
-    font-size: 9px;
-    font-weight: 700;
-    color: rgba(0, 0, 0, 0.65);
-    text-shadow: 0 0 2px rgba(255, 255, 255, 0.3);
-  }
-  #theme-picker .swatch:hover {
-    transform: scale(1.15);
-    border-color: rgba(255,255,255,0.4);
-  }
-  #theme-picker .swatch.on {
-    border-color: var(--accent);
-    box-shadow: 0 0 6px var(--accent);
-  }
-  #theme-picker .swatch::after {
-    content: attr(data-name);
-    position: absolute;
-    top: 22px; left: 50%;
-    transform: translateX(-50%);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    padding: 3px 6px;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 4px;
+    cursor: pointer;
     color: var(--ink);
-    font-size: 9px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s;
+    transition: background 0.1s;
   }
-  #theme-picker .swatch:hover::after { opacity: 1; }
+  #theme-menu .item:hover { background: rgba(255, 255, 255, 0.06); }
+  #theme-menu .item.on { background: rgba(124, 247, 255, 0.10); }
+  #theme-menu .item .swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    flex-shrink: 0;
+  }
+  #theme-menu .item .name { flex: 1; font-size: 11px; letter-spacing: 0.03em; }
+  #theme-menu .item .check {
+    color: var(--accent);
+    font-size: 11px;
+    opacity: 0;
+  }
+  #theme-menu .item.on .check { opacity: 1; }
 </style>
 </head>
 <body>
   <canvas id="stage"></canvas>
 
   <div id="theme-picker">
-    <span class="label">Theme</span>
-    <div class="swatches" id="theme-swatches"></div>
+    <button id="theme-button" type="button" aria-haspopup="listbox" aria-expanded="false">
+      <span class="label">Theme</span>
+      <span class="name" id="theme-current">—</span>
+      <span class="chevron">▾</span>
+    </button>
+    <div id="theme-menu" role="listbox"></div>
   </div>
 
   <div id="title">
@@ -256,19 +269,19 @@ const THEMES = [
   { id: 'cyan',     name: 'Cyan',
     hues: { hull: 195, planet: 195, dust: 200, frame: 195, dash: 38,
             system: 195, selected: 38, grid: 195, accent: 195, warn: 12 } },
-  { id: 'phosphor', name: 'Phosphor',
+  { id: 'phosphor', name: 'Green Phosphor',
     hues: { hull: 110, planet: 110, dust: 100, frame: 110, dash: 75,
             system: 110, selected: 75, grid: 110, accent: 110, warn: 50 } },
-  { id: 'amber',    name: 'Amber',
+  { id: 'amber',    name: 'Amber Monochrome',
     hues: { hull: 38, planet: 38, dust: 45, frame: 38, dash: 30,
             system: 38, selected: 30, grid: 38, accent: 38, warn: 12 } },
-  { id: 'ember',    name: 'Ember',
+  { id: 'ember',    name: 'Cyan & Amber',
     hues: { hull: 195, planet: 28, dust: 210, frame: 195, dash: 28,
             system: 195, selected: 28, grid: 200, accent: 28, warn: 0 } },
-  { id: 'plasma',   name: 'Plasma',
+  { id: 'plasma',   name: 'Magenta Synthwave',
     hues: { hull: 290, planet: 290, dust: 270, frame: 290, dash: 320,
             system: 290, selected: 320, grid: 280, accent: 320, warn: 60 } },
-  { id: 'spectrum', name: 'Spectrum',
+  { id: 'spectrum', name: 'Full Color',
     hues: {
       hull:     { h: 210, s: 25, l: 75 },
       planet:   { h: 195, s: 55, l: 60 },
@@ -512,28 +525,84 @@ function setGalaxy(idx) {
 // initialize the title to show galaxy 1's name
 setGalaxy(0);
 
-/* ---- theme picker ---- */
-const swatchContainer = document.getElementById('theme-swatches');
-function renderSwatches() {
-  swatchContainer.innerHTML = '';
+/* ---- theme picker (dropdown) ---- */
+const themePicker = document.getElementById('theme-picker');
+const themeButton = document.getElementById('theme-button');
+const themeMenu = document.getElementById('theme-menu');
+const themeCurrent = document.getElementById('theme-current');
+
+function renderThemeMenu() {
+  themeMenu.innerHTML = '';
   for (const t of THEMES) {
-    const sw = document.createElement('div');
-    sw.className = 'swatch' + (t.id === state.themeId ? ' on' : '');
-    sw.dataset.name = t.name;
-    sw.textContent = t.name.charAt(0);
-    // Show the theme's accent color in the swatch.
+    const item = document.createElement('div');
+    item.className = 'item' + (t.id === state.themeId ? ' on' : '');
+    item.role = 'option';
+    item.setAttribute('aria-selected', t.id === state.themeId ? 'true' : 'false');
+
+    const sw = document.createElement('span');
+    sw.className = 'swatch';
     const sc = resolveColor(t.hues.accent);
     sw.style.background = `hsl(${sc.h}, ${sc.s}%, ${sc.l}%)`;
-    sw.addEventListener('click', () => {
+
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = t.name;
+
+    const check = document.createElement('span');
+    check.className = 'check';
+    check.textContent = '✓';
+
+    item.appendChild(sw);
+    item.appendChild(name);
+    item.appendChild(check);
+
+    item.addEventListener('click', () => {
       state.themeId = t.id;
       saveThemeId(t.id);
       applyThemeToCss(getTheme(t.id));
-      renderSwatches();
+      updateThemeButton();
+      renderThemeMenu();
+      closeThemeMenu();
     });
-    swatchContainer.appendChild(sw);
+
+    themeMenu.appendChild(item);
   }
 }
-renderSwatches();
+
+function updateThemeButton() {
+  const t = getTheme(state.themeId);
+  themeCurrent.textContent = t.name;
+}
+
+function openThemeMenu() {
+  themePicker.classList.add('open');
+  themeButton.setAttribute('aria-expanded', 'true');
+}
+function closeThemeMenu() {
+  themePicker.classList.remove('open');
+  themeButton.setAttribute('aria-expanded', 'false');
+}
+function toggleThemeMenu() {
+  if (themePicker.classList.contains('open')) closeThemeMenu();
+  else openThemeMenu();
+}
+
+themeButton.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleThemeMenu();
+});
+
+// Click anywhere else closes the menu.
+addEventListener('click', (e) => {
+  if (!themePicker.contains(e.target)) closeThemeMenu();
+});
+// Escape closes the menu too.
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeThemeMenu();
+});
+
+updateThemeButton();
+renderThemeMenu();
 
 /* ---- offscreen color buckets for clean per-color bloom ---- */
 const buckets = {};
