@@ -482,6 +482,17 @@
   #target-flyout .target-flyout-jump:active {
     transform: translateY(0);
   }
+  #target-flyout .target-flyout-jump:disabled {
+    background: rgba(40, 50, 70, 0.6);
+    color: var(--warn);
+    box-shadow: none;
+    cursor: not-allowed;
+    text-shadow: 0 0 6px var(--warn);
+  }
+  #target-flyout .target-flyout-jump:disabled:hover {
+    transform: none;
+    box-shadow: none;
+  }
 
   /* ============== Trade screen (docked) ============== */
   #docked-overlay {
@@ -781,6 +792,15 @@
   #hud-br { right: 24px; text-align: right; }
   #hud-bl .lbl, #hud-br .lbl { color: var(--muted); text-shadow: none; font-size: 9px; }
   #hud-bl .v, #hud-br .v { font-variant-numeric: tabular-nums; }
+  #hud-bl .v.warn, #hud-br .v.warn {
+    color: var(--warn);
+    text-shadow: 0 0 6px var(--warn);
+  }
+  #hMassLock .v {
+    color: var(--warn);
+    text-shadow: 0 0 8px var(--warn);
+    letter-spacing: 0.22em;
+  }
 
   /* "Open chart" button visible in flight */
   #open-chart-btn {
@@ -956,11 +976,13 @@
   <div id="hud-bl" class="show-flight">
     <div><span class="lbl">SPEED</span> <span class="v" id="hSpeed">0.0</span></div>
     <div><span class="lbl">THROTTLE</span> <span class="v" id="hThr">0%</span></div>
+    <div><span class="lbl">FUEL</span> <span class="v" id="hFuel">7.0</span> <span class="lbl">LY</span></div>
   </div>
   <div id="hud-br" class="show-flight">
     <div><span class="lbl">SYSTEM</span> <span class="v" id="hSystem">—</span></div>
     <div><span class="lbl">PITCH</span> <span class="v" id="hPitch">0°</span></div>
     <div><span class="lbl">YAW</span> <span class="v" id="hYaw">0°</span></div>
+    <div id="hMassLock" hidden><span class="v">⚠ MASS-LOCKED</span></div>
   </div>
   <button id="open-chart-btn" class="show-flight" type="button">◤ Galactic Chart</button>
 
@@ -1452,13 +1474,21 @@ function reduce(state, action){
       return { ...state, selectedSystemSeed: action.seed };
     case 'begin-hyperspace': {
       if(!state.selectedSystemSeed) return state;
-      // Compute LY cost and deduct fuel. Gate the jump if we don't
-      // have enough fuel — silently no-op (UI should disable the
-      // jump button when canJump is false).
       const cur = state.currentSystemSeed
         ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
         : null;
       const tgt = findSystemBySeed(state.galaxies, state.selectedSystemSeed);
+      // Mass-lock gate: too close to the local sun or planet. Recompute
+      // bodies for the current system; the chart UI should also disable
+      // the Engage button via updateTargetFlyout, but defend in depth.
+      if(cur){
+        const bodies = buildSystemBodies(cur);
+        if(isMassLocked(state.ship.position,
+             [bodies.planet.pos, bodies.sun.pos])){
+          return state;
+        }
+      }
+      // Fuel gate: compute LY cost; reject if we can't afford it.
       let newFuel = state.fuel ?? FUEL_MAX_LY;
       if(cur && tgt){
         const ly = Math.hypot((tgt.x - cur.x) * 0.5, (tgt.y - cur.y) * 0.5);
@@ -1924,6 +1954,31 @@ function updateTargetFlyout(state){
   // Content
   flyoutNameEl.textContent = chartLocked.name;
   flyoutDistEl.textContent = formatDistance(state, chartLocked);
+
+  // Jump-readiness: check fuel + mass-lock and reflect in the Engage button.
+  const cur = state.currentSystemSeed
+    ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
+    : null;
+  let ready = true;
+  let reason = null;
+  if(cur && cur !== chartLocked){
+    const ly = Math.hypot((chartLocked.x - cur.x) * 0.5, (chartLocked.y - cur.y) * 0.5);
+    if(!canJump(state.fuel ?? FUEL_MAX_LY, ly)){
+      ready = false;
+      reason = 'Insufficient fuel';
+    }
+    // Mass-lock: only check when bodies for the current system are on hand.
+    if(ready && systemBodies && systemBodiesSeed === state.currentSystemSeed.join(',')){
+      if(isMassLocked(state.ship.position,
+           [systemBodies.planet.pos, systemBodies.sun.pos])){
+        ready = false;
+        reason = 'Mass-locked — clear the planet';
+      }
+    }
+  }
+  const jumpBtn = document.getElementById('target-flyout-jump');
+  jumpBtn.disabled = !ready;
+  jumpBtn.textContent = ready ? 'Engage Jump' : reason;
 }
 
 /**
@@ -2737,7 +2792,7 @@ function renderFlight(state, theme, dt){
     glowTextHUD(_miniLabels[i], xMid, barY + barH + 8, _amber, 8, '500');
   }
 
-  /* ---- HUD readouts (HTML elements, unchanged) ---- */
+  /* ---- HUD readouts (HTML elements) ---- */
   document.getElementById('hSpeed').textContent = state.ship.speed.toFixed(1);
   document.getElementById('hThr').textContent = `${Math.round(state.ship.throttle*100)}%`;
   const sysName = state.currentSystemSeed
@@ -2749,6 +2804,21 @@ function renderFlight(state, theme, dt){
   const yaw = Math.atan2(fwd[0], fwd[2]);
   document.getElementById('hPitch').textContent = `${(pitch*180/Math.PI).toFixed(0)}°`;
   document.getElementById('hYaw').textContent = `${(yaw*180/Math.PI).toFixed(0)}°`;
+
+  // Fuel: turn warn-color when below ~2 LY (won't make a typical jump).
+  const fuelLY = state.fuel ?? FUEL_MAX_LY;
+  const fuelEl = document.getElementById('hFuel');
+  fuelEl.textContent = fuelLY.toFixed(1);
+  fuelEl.classList.toggle('warn', fuelLY < 2);
+
+  // Mass-lock indicator visible only while actually locked.
+  const ml = document.getElementById('hMassLock');
+  if(systemBodies && isMassLocked(state.ship.position,
+       [systemBodies.planet.pos, systemBodies.sun.pos])){
+    ml.hidden = false;
+  } else {
+    ml.hidden = true;
+  }
 }
 
 /* ===== 12. Hyperspace screen ===== */
@@ -3392,6 +3462,10 @@ document.getElementById('target-flyout-jump').addEventListener('click', (e)=>{
   // click and treat it as a "click on empty chart space" that would
   // unlock the target.
   e.stopPropagation();
+  // Respect the disabled state set by the readiness check in
+  // updateTargetFlyout — the button can be visibly disabled but the
+  // browser still fires click on some setups.
+  if(e.currentTarget.disabled) return;
   if(chartLocked && !countdown) startCountdown();
 });
 
