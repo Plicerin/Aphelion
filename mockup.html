@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Aphelion — style mockup (current vs proposed)</title>
+<style>
+  :root {
+    --bg: #02030a;
+    --panel: rgba(10, 16, 32, 0.7);
+    --border: rgba(120, 200, 255, 0.22);
+    --ink: #cfe7ff;
+    --muted: #6b7a99;
+    --accent: #7cf7ff;
+    --accent-warm: hsl(38, 90%, 68%);
+  }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+    height: 100%;
+  }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 3px);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #stars { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  #stage { position: fixed; inset: 0; display: block; z-index: 1; }
+
+  #panel {
+    position: fixed;
+    top: 16px; right: 16px;
+    z-index: 6;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px 12px;
+    width: 240px;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  #panel h1 {
+    margin: 0 0 4px;
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  #panel .sub {
+    margin: 0 0 10px;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px;
+    margin: 5px 0;
+  }
+  .row label { color: var(--muted); font-size: 10px; flex: 0 0 60px; letter-spacing: 0.05em; }
+  .row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .row .val { width: 32px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; font-size: 10px; }
+
+  .toggles {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+    margin-top: 10px;
+  }
+  .toggles button {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 0;
+    font-family: inherit;
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .toggles button:hover { background: rgba(124, 247, 255, 0.08); }
+  .toggles button.on { background: var(--accent); color: #02030a; border-color: var(--accent); }
+
+  .styleToggles button.on { background: var(--accent-warm); color: #02030a; border-color: var(--accent-warm); }
+
+  .group-label {
+    margin: 12px 0 4px;
+    font-size: 8px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <canvas id="stars"></canvas>
+  <canvas id="stage"></canvas>
+
+  <div id="panel">
+    <h1>◉ STYLE MOCKUP</h1>
+    <p class="sub">LAVE · AGRICULTURAL · TL5</p>
+
+    <div class="group-label">Style</div>
+    <div class="toggles styleToggles">
+      <button data-style="current" class="on">Current</button>
+      <button data-style="proposed">Proposed</button>
+    </div>
+
+    <div class="group-label">Tuning</div>
+    <div class="row">
+      <label>Glow</label>
+      <input id="glow" type="range" min="0" max="100" value="75">
+      <div class="val" id="glowVal">75</div>
+    </div>
+    <div class="row">
+      <label>Cell</label>
+      <input id="density" type="range" min="6" max="28" value="8">
+      <div class="val" id="densityVal">8</div>
+    </div>
+    <div class="row">
+      <label>Speed</label>
+      <input id="speed" type="range" min="0" max="200" value="100">
+      <div class="val" id="speedVal">1.0</div>
+    </div>
+
+    <div class="group-label">Palette</div>
+    <div class="toggles">
+      <button data-preset="phosphor" class="on">Phosphor</button>
+      <button data-preset="amber">Amber CRT</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  /* =========================================================================
+     APHELION — STYLE COMPARISON MOCKUP
+     -------------------------------------------------------------------------
+     Same Lave-system cockpit scene rendered two ways. Toggle "Style" in the
+     panel to flip between:
+       Current  — tiny cells (~8px), glyphs picked from a brightness ramp.
+                  Reads as pixel density rather than typography.
+       Proposed — larger cells (~18px), each layer chooses its own glyphs:
+                  ─ │ \ / for hull edges, ( ) _ for planet limb, ┌ ┐ └ ┘
+                  for cockpit corners, █ ▓ ░ for gauges, real text for
+                  dashboard labels.
+
+     Pipeline:
+       1. Each layer has both an intensity grid (Float32) and a chars grid.
+       2. Compositor picks the brightest layer per cell.
+       3. If that layer set a glyph for the cell, use it.
+          Else fall back to the universal ramp (this is the "current" path).
+       4. Per-layer offscreen bloom keeps colors from muddying.
+     ========================================================================= */
+
+  const stage = document.getElementById('stage');
+  const ctx = stage.getContext('2d', { alpha: false });
+  const stars = document.getElementById('stars');
+  const sctx = stars.getContext('2d');
+
+  /* ---------- COBRA MK III blueprint (from Elite source) ---------- */
+  const VERTICES = [
+    [  32,    0,   76,  15, 15, 15, 15, 31],
+    [ -32,    0,   76,  15, 15, 15, 15, 31],
+    [   0,   26,   24,  15, 15, 15, 15, 31],
+    [-120,   -3,   -8,   3,  7, 10, 10, 31],
+    [ 120,   -3,   -8,   4,  8, 12, 12, 31],
+    [ -88,   16,  -40,  15, 15, 15, 15, 31],
+    [  88,   16,  -40,  15, 15, 15, 15, 31],
+    [ 128,   -8,  -40,   8,  9, 12, 12, 31],
+    [-128,   -8,  -40,   7,  9, 10, 10, 31],
+    [   0,   26,  -40,   5,  6,  9,  9, 31],
+    [ -32,  -24,  -40,   9, 10, 11, 11, 31],
+    [  32,  -24,  -40,   9, 11, 12, 12, 31],
+    [ -36,    8,  -40,   9,  9,  9,  9, 20],
+    [  -8,   12,  -40,   9,  9,  9,  9, 20],
+    [   8,   12,  -40,   9,  9,  9,  9, 20],
+    [  36,    8,  -40,   9,  9,  9,  9, 20],
+    [  36,  -12,  -40,   9,  9,  9,  9, 20],
+    [   8,  -16,  -40,   9,  9,  9,  9, 20],
+    [  -8,  -16,  -40,   9,  9,  9,  9, 20],
+    [ -36,  -12,  -40,   9,  9,  9,  9, 20],
+    [   0,    0,   76,   0, 11, 11, 11,  6],
+    [   0,    0,   90,   0, 11, 11, 11, 31],
+    [ -80,   -6,  -40,   9,  9,  9,  9,  8],
+    [ -80,    6,  -40,   9,  9,  9,  9,  8],
+    [ -88,    0,  -40,   9,  9,  9,  9,  6],
+    [  80,    6,  -40,   9,  9,  9,  9,  8],
+    [  88,    0,  -40,   9,  9,  9,  9,  6],
+    [  80,   -6,  -40,   9,  9,  9,  9,  8],
+  ];
+  const EDGES = [
+    [ 0, 1, 0,11], [ 0, 4, 4,12], [ 1, 3, 3,10], [ 3, 8, 7,10], [ 4, 7, 8,12],
+    [ 6, 7, 8, 9], [ 6, 9, 6, 9], [ 5, 9, 5, 9], [ 5, 8, 7, 9], [ 2, 5, 1, 5],
+    [ 2, 6, 2, 6], [ 3, 5, 3, 7], [ 4, 6, 4, 8], [ 1, 2, 0, 1], [ 0, 2, 0, 2],
+    [ 8,10, 9,10], [10,11, 9,11], [ 7,11, 9,12], [ 1,10,10,11], [ 0,11,11,12],
+    [ 1, 5, 1, 3], [ 0, 6, 2, 4], [12,13, 9, 9], [18,19, 9, 9], [14,15, 9, 9],
+    [16,17, 9, 9], [15,16, 9, 9], [14,17, 9, 9], [13,18, 9, 9], [12,19, 9, 9],
+    [ 2, 9, 5, 6], [22,24, 9, 9], [23,24, 9, 9], [22,23, 9, 9], [25,26, 9, 9],
+    [26,27, 9, 9], [25,27, 9, 9],
+  ];
+  const FACES = [
+    [   0,  62,  31], [ -18,  55,  16], [  18,  55,  16], [ -16,  52,  14], [  16,  52,  14],
+    [ -14,  47,   0], [  14,  47,   0], [ -61, 102,   0], [  61, 102,   0], [   0,   0, -80],
+    [  -7, -42,   9], [   0, -30,   6], [   7, -42,   9],
+  ];
+
+  /* ---------- palettes ---------- */
+  const PALETTES = {
+    phosphor: { hull: 110, planet: 195, dust: 200, frame: 195, dash: 38,  name: 'PHOS' },
+    amber:    { hull: 38,  planet: 28,  dust: 50,  frame: 38,  dash: 38,  name: 'AMBER' },
+  };
+
+  const state = {
+    glow: 0.75,
+    density: 8,
+    speed: 1.0,
+    preset: 'phosphor',
+    style: 'current',     // 'current' | 'proposed'
+    t: 0,
+  };
+
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.floor(innerWidth  * dpr));
+    const h = Math.max(1, Math.floor(innerHeight * dpr));
+    for (const c of [stage, stars]) {
+      c.width = w; c.height = h;
+      c.style.width  = Math.max(1, innerWidth)  + 'px';
+      c.style.height = Math.max(1, innerHeight) + 'px';
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawStars();
+  }
+  addEventListener('resize', resize);
+
+  /* ---------- starfield (background, twinkly) ---------- */
+  const starList = [];
+  for (let i = 0; i < 220; i++) {
+    starList.push({
+      x: Math.random(), y: Math.random() * 0.78,
+      m: Math.random() * 0.6 + 0.2,
+      p: Math.random() * Math.PI * 2,
+    });
+  }
+  function drawStars() {
+    sctx.fillStyle = '#02030a';
+    sctx.fillRect(0, 0, innerWidth, innerHeight);
+    for (const s of starList) {
+      const tw = 0.6 + 0.4 * Math.sin(state.t * 1.5 + s.p);
+      const a = s.m * tw;
+      sctx.fillStyle = `rgba(200, 230, 255, ${a})`;
+      // In proposed mode the background gets typographic stars too — small
+      // dots/asterisks instead of single-pixel dots, so they read at the
+      // larger cell size.
+      if (state.style === 'proposed') {
+        sctx.font = '11px ui-monospace, monospace';
+        sctx.textBaseline = 'middle';
+        sctx.textAlign = 'center';
+        const ch = s.m > 0.55 ? '*' : s.m > 0.4 ? '+' : '·';
+        sctx.fillText(ch, s.x * innerWidth, s.y * innerHeight);
+      } else {
+        sctx.fillRect(s.x * innerWidth, s.y * innerHeight, 1, 1);
+      }
+    }
+  }
+
+  /* ---------- stardust (foreground particles streaking past) ---------- */
+  const dust = [];
+  for (let i = 0; i < 60; i++) {
+    dust.push({
+      x: (Math.random() - 0.5) * 4,
+      y: (Math.random() - 0.5) * 4,
+      z: -Math.random() * 6,
+    });
+  }
+
+  resize();
+
+  /* ---------- math ---------- */
+  function rotY(p, a) { const c=Math.cos(a),s=Math.sin(a); return [c*p[0]+s*p[2], p[1], -s*p[0]+c*p[2]]; }
+  function rotX(p, a) { const c=Math.cos(a),s=Math.sin(a); return [p[0], c*p[1]-s*p[2], s*p[1]+c*p[2]]; }
+  function rotZ(p, a) { const c=Math.cos(a),s=Math.sin(a); return [c*p[0]-s*p[1], s*p[0]+c*p[1], p[2]]; }
+
+  function project(p, w, h, fov, camZ, screenY = h * 0.42) {
+    const z = camZ - p[2];
+    if (z < 0.05) return null;
+    return [(p[0] * fov) / z + w / 2,
+            (-p[1] * fov) / z + screenY,
+             z];
+  }
+
+  const ramp = " .·:-=+*#%@█";
+
+  /* ---------- glyph helpers (used in proposed mode) ---------- */
+
+  // 8-way slope: pick a character from line direction (dx, dy) in screen space.
+  function slopeChar(dx, dy) {
+    const a = Math.atan2(dy, dx);                  // -π..π
+    const am = a < 0 ? a + Math.PI : a;            // 0..π (line is undirected)
+    if (am < Math.PI/8 || am > 7*Math.PI/8) return '─';
+    if (am > 3*Math.PI/8 && am < 5*Math.PI/8) return '│';
+    if (am >= Math.PI/8 && am <= 3*Math.PI/8) return '\\'; // dy>0 in screen = down
+    return '/';
+  }
+
+  // Tangent of a parametric circle at angle `a`. Direction is (-sin a, cos a).
+  function tangentChar(a) {
+    return slopeChar(-Math.sin(a), Math.cos(a));
+  }
+
+  // Pick a "corner" character for a 4-corner cockpit bracket.
+  // sx,sy in {-1,+1} pick which corner: top-left, top-right, bottom-left, bottom-right.
+  function cornerChar(sx, sy) {
+    if (sx < 0 && sy < 0) return '┌';
+    if (sx > 0 && sy < 0) return '┐';
+    if (sx < 0 && sy > 0) return '└';
+    return '┘';
+  }
+
+  // Pick a fill block by intensity 0..1 — useful for gauges in proposed mode.
+  function blockChar(v) {
+    if (v >= 0.85) return '█';
+    if (v >= 0.6)  return '▓';
+    if (v >= 0.35) return '▒';
+    return '░';
+  }
+
+  /* ---------- input ---------- */
+  const wire = (id, fn, fmt) => {
+    const el = document.getElementById(id);
+    const val = document.getElementById(id + 'Val');
+    el.addEventListener('input', () => {
+      fn(+el.value);
+      val.textContent = fmt ? fmt(+el.value) : el.value;
+    });
+  };
+  wire('glow',    v => state.glow = v / 100);
+  wire('density', v => state.density = v);
+  wire('speed',   v => state.speed = v / 100, v => (v/100).toFixed(1));
+
+  document.querySelectorAll('[data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('on'));
+      btn.classList.add('on');
+      state.preset = btn.dataset.preset;
+    });
+  });
+
+  // Style toggle. Bumps cell density to a sensible default for the new style
+  // (only if the slider is still at the OTHER style's default — respect the
+  // user's manual changes).
+  const STYLE_DEFAULTS = { current: 8, proposed: 18 };
+  document.querySelectorAll('[data-style]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-style]').forEach(b => b.classList.remove('on'));
+      btn.classList.add('on');
+      const next = btn.dataset.style;
+      const otherDefault = STYLE_DEFAULTS[next === 'current' ? 'proposed' : 'current'];
+      if (state.density === otherDefault) {
+        const v = STYLE_DEFAULTS[next];
+        state.density = v;
+        document.getElementById('density').value = v;
+        document.getElementById('densityVal').textContent = v;
+      }
+      state.style = next;
+      drawStars();
+    });
+  });
+
+  /* ---------- offscreen color buckets for clean per-color bloom ---------- */
+  const buckets = {};
+  function getBucket(name) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, stage.width || Math.floor(innerWidth * dpr));
+    const h = Math.max(1, stage.height || Math.floor(innerHeight * dpr));
+    if (!buckets[name] || buckets[name].canvas.width !== w || buckets[name].canvas.height !== h) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const cx = c.getContext('2d');
+      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      buckets[name] = { canvas: c, ctx: cx };
+    }
+    return buckets[name];
+  }
+
+  /* ---------- helpers: plot edges/points into a layer's grids ----------
+     A "layer" is { name, intensity, chars, hue }. plotLine/plotPoint take
+     the layer and an optional character. The character is written only
+     when state.style === 'proposed'; under 'current' it stays null and
+     the compositor falls back to the brightness ramp.                    */
+  let _curCols = 0, _curRows = 0;
+
+  function plotLine(layer, x1, y1, x2, y2, brightness, ch) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const steps = Math.max(2, Math.ceil(Math.hypot(dx, dy) * 1.4));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const gx = Math.round(x1 + dx*t), gy = Math.round(y1 + dy*t);
+      if (gx < 0 || gx >= _curCols || gy < 0 || gy >= _curRows) continue;
+      const idx = gy*_curCols + gx;
+      if (brightness > layer.intensity[idx]) {
+        layer.intensity[idx] = brightness;
+        if (ch && state.style === 'proposed') layer.chars[idx] = ch;
+        else if (state.style === 'current') layer.chars[idx] = null;
+      }
+    }
+  }
+
+  function plotPoint(layer, gx, gy, brightness, ch) {
+    if (gx < 0 || gx >= _curCols || gy < 0 || gy >= _curRows) return;
+    const idx = gy*_curCols + gx;
+    if (brightness > layer.intensity[idx]) {
+      layer.intensity[idx] = brightness;
+      if (ch && state.style === 'proposed') layer.chars[idx] = ch;
+      else if (state.style === 'current') layer.chars[idx] = null;
+    }
+  }
+
+  function makeLayer(name, hue, cols, rows) {
+    return {
+      name, hue,
+      intensity: new Float32Array(cols * rows),
+      chars: new Array(cols * rows).fill(null),
+    };
+  }
+
+  /* ---------- main render loop ---------- */
+  let last = performance.now();
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    state.t += dt * state.speed;
+
+    drawStars();
+
+    const W = innerWidth, H = innerHeight;
+    const cell = state.density;
+    const cols = Math.ceil(W / cell);
+    const rows = Math.ceil(H / cell);
+    _curCols = cols; _curRows = rows;
+    const PAL = PALETTES[state.preset];
+
+    ctx.fillStyle = 'rgba(2, 3, 10, 1)';
+    ctx.fillRect(0, 0, W, H);
+
+    const lHull   = makeLayer('hull',   PAL.hull,   cols, rows);
+    const lPlanet = makeLayer('planet', PAL.planet, cols, rows);
+    const lDust   = makeLayer('dust',   PAL.dust,   cols, rows);
+    const lFrame  = makeLayer('frame',  PAL.frame,  cols, rows);
+    const lDash   = makeLayer('dash',   PAL.dash,   cols, rows);
+
+    /* ---------- distant planet (limb arc, lower-left) ---------- */
+    {
+      const cx = W * 0.18, cy = H * 0.95;
+      const radius = Math.min(W, H) * 0.5;
+      const drift = state.t * 0.01;
+      // Sweep an arc from about -135° to -45° (top of the sphere). In
+      // proposed mode each step picks a glyph from the tangent direction
+      // so the curve reads as `\ \ - - - / /` instead of dots.
+      for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.15; a += 0.008) {
+        const x = cx + Math.cos(a + drift) * radius;
+        const y = cy + Math.sin(a + drift) * radius;
+        const gx = Math.round(x / cell), gy = Math.round(y / cell);
+        let ch = tangentChar(a + drift);
+        // The very ends of the arc face mostly sideways — use ( ) for an
+        // unmistakable spherical silhouette.
+        if (a + drift < -Math.PI * 0.78) ch = '(';
+        else if (a + drift > -Math.PI * 0.22) ch = ')';
+        plotPoint(lPlanet, gx, gy, 0.85, ch);
+      }
+      // Sparser meridians to suggest curvature.
+      for (let m = 0; m < 3; m++) {
+        const phase = (m / 3) * Math.PI * 0.6 + 0.3;
+        for (let a = -Math.PI * 0.78; a <= -Math.PI * 0.25; a += 0.02) {
+          const r2 = radius * (0.92 - m * 0.08);
+          const x = cx + Math.cos(a + drift) * r2 * Math.cos(phase);
+          const y = cy + Math.sin(a + drift) * r2;
+          const gx = Math.round(x / cell), gy = Math.round(y / cell);
+          plotPoint(lPlanet, gx, gy, 0.45, ':');
+        }
+      }
+    }
+
+    /* ---------- stardust (streaking foreground particles) ---------- */
+    {
+      const fov = 320;
+      const camZ = 1.0;
+      const dustSpeed = 1.4;
+      for (const d of dust) {
+        d.z += dustSpeed * dt * state.speed;
+        if (d.z > camZ - 0.1) {
+          d.x = (Math.random() - 0.5) * 4;
+          d.y = (Math.random() - 0.5) * 4;
+          d.z = -Math.random() * 6 - 0.5;
+        }
+        const sp  = project([d.x, d.y, d.z],         W, H, fov, camZ, H * 0.42);
+        const sp2 = project([d.x, d.y, d.z - 0.06],  W, H, fov, camZ, H * 0.42);
+        if (!sp || !sp2) continue;
+        const close = 1 - Math.max(0, Math.min(1, (camZ - d.z) / 6));
+        const x1 = sp[0]/cell, y1 = sp[1]/cell;
+        const x2 = sp2[0]/cell, y2 = sp2[1]/cell;
+        // Streaks pick a character from their on-screen slope.
+        const ch = slopeChar(x2 - x1, y2 - y1);
+        plotLine(lDust, x1, y1, x2, y2, 0.35 + close * 0.6, ch);
+      }
+    }
+
+    /* ---------- the Cobra, drifting past as a target ---------- */
+    {
+      const orbitT = state.t * 0.25;
+      const shipPos = [
+        Math.sin(orbitT * 0.7) * 0.55,
+        0.05 + Math.sin(orbitT * 0.4) * 0.08,
+        -2.0 + Math.cos(orbitT * 0.5) * 0.4,
+      ];
+      const yaw = orbitT * 1.1;
+      const pitch = 0.3 + Math.sin(orbitT * 0.6) * 0.2;
+      const roll = orbitT * 0.4;
+      const SCALE = 0.0025;
+
+      const tv = VERTICES.map(v => {
+        let p = [v[0] * SCALE, v[1] * SCALE, v[2] * SCALE];
+        p = rotZ(p, roll);
+        p = rotX(p, pitch);
+        p = rotY(p, yaw);
+        return [p[0] + shipPos[0], p[1] + shipPos[1], p[2] + shipPos[2]];
+      });
+
+      const camZ = 1.0;
+      const fov = 320;
+      const faceVis = FACES.map(f => {
+        let n = [f[0], f[1], f[2]];
+        n = rotZ(n, roll); n = rotX(n, pitch); n = rotY(n, yaw);
+        return n[2] > 0;
+      });
+
+      const pv = tv.map(p => project(p, W, H, fov, camZ, H * 0.42));
+
+      for (const ed of EDGES) {
+        const [v1, v2, f1, f2] = ed;
+        if (!faceVis[f1] && !faceVis[f2]) continue;
+        const a = pv[v1], b = pv[v2];
+        if (!a || !b) continue;
+        const x1 = a[0]/cell, y1 = a[1]/cell, x2 = b[0]/cell, y2 = b[1]/cell;
+        const avgZ = (a[2] + b[2]) * 0.5;
+        const close = Math.max(0.4, Math.min(1, 2 / avgZ));
+        const ch = slopeChar(x2 - x1, y2 - y1);
+        plotLine(lHull, x1, y1, x2, y2, close * 0.85, ch);
+      }
+    }
+
+    /* ---------- crosshair (center of view) ---------- */
+    {
+      const ccx = (W / 2) / cell;
+      const ccy = (H * 0.42) / cell;
+      const arm = 1.6;
+      const gap = 0.5;
+      plotLine(lFrame, ccx - arm - gap, ccy, ccx - gap, ccy, 0.95, '─');
+      plotLine(lFrame, ccx + gap, ccy, ccx + arm + gap, ccy, 0.95, '─');
+      plotLine(lFrame, ccx, ccy - arm - gap, ccx, ccy - gap, 0.95, '│');
+      plotLine(lFrame, ccx, ccy + gap, ccx, ccy + arm + gap, 0.95, '│');
+    }
+
+    /* ---------- cockpit frame (angular brackets at corners + slanted sides) ---------- */
+    {
+      const inset = 12;
+      const dashTop = H * 0.72;
+      const tlx = inset, tly = inset;
+      const trx = W - inset, try_ = inset;
+      const blx = inset + W * 0.10, bly = dashTop;
+      const brx = W - inset - W * 0.10, bry = dashTop;
+
+      // Top: horizontal frame edge.
+      plotLine(lFrame, tlx/cell, tly/cell, trx/cell, try_/cell, 0.7, '─');
+      // Sides: slanted in toward the dashboard. Left slope, right slope.
+      plotLine(lFrame, tlx/cell, tly/cell, blx/cell, bly/cell, 0.7, slopeChar(blx-tlx, bly-tly));
+      plotLine(lFrame, trx/cell, try_/cell, brx/cell, bry/cell, 0.7, slopeChar(brx-trx, bry-try_));
+
+      // Add explicit corner markers at the four cockpit corners — they
+      // really sell the "this is a frame" reading at larger cells.
+      plotPoint(lFrame, Math.round(tlx/cell), Math.round(tly/cell), 0.95, '┌');
+      plotPoint(lFrame, Math.round(trx/cell), Math.round(try_/cell), 0.95, '┐');
+      plotPoint(lFrame, Math.round(blx/cell), Math.round(bly/cell), 0.85, '└');
+      plotPoint(lFrame, Math.round(brx/cell), Math.round(bry/cell), 0.85, '┘');
+    }
+
+    /* ---------- dashboard ---------- */
+    {
+      const dashTop = H * 0.72;
+      const dashBottom = H - 8;
+      const dashH = dashBottom - dashTop;
+
+      // Top edge of dashboard
+      plotLine(lDash,
+        (W * 0.10 + 12)/cell, dashTop/cell,
+        (W - W * 0.10 - 12)/cell, dashTop/cell, 0.85, '─');
+
+      /* --- elliptical 3D scanner (radar) in the center --- */
+      const rcx = W * 0.5;
+      const rcy = dashTop + dashH * 0.55;
+      const rw = W * 0.16;
+      const rh = dashH * 0.32;
+
+      // outer ellipse outline — character chosen by tangent direction.
+      let prev = null, prevA = 0;
+      for (let a = 0; a <= Math.PI * 2 + 0.05; a += 0.05) {
+        const x = rcx + Math.cos(a) * rw;
+        const y = rcy + Math.sin(a) * rh;
+        if (prev) {
+          // Use slope between successive samples — accurate for ellipse curvature.
+          plotLine(lDash, prev[0]/cell, prev[1]/cell, x/cell, y/cell, 0.85,
+                   slopeChar(x - prev[0], y - prev[1]));
+        }
+        prev = [x, y]; prevA = a;
+      }
+      prev = null;
+      for (let a = 0; a <= Math.PI * 2 + 0.05; a += 0.06) {
+        const x = rcx + Math.cos(a) * rw * 0.55;
+        const y = rcy + Math.sin(a) * rh * 0.55;
+        if (prev) {
+          plotLine(lDash, prev[0]/cell, prev[1]/cell, x/cell, y/cell, 0.55,
+                   slopeChar(x - prev[0], y - prev[1]));
+        }
+        prev = [x, y];
+      }
+      // Central horizontal axis
+      plotLine(lDash, (rcx - rw)/cell, rcy/cell, (rcx + rw)/cell, rcy/cell, 0.5, '─');
+
+      // Radar blip — the Cobra's relative position as a stalk on the scanner.
+      const orbitT = state.t * 0.25;
+      const shipScannerX = Math.sin(orbitT * 0.7) * 0.55;
+      const shipScannerY = 0.05 + Math.sin(orbitT * 0.4) * 0.08;
+      const shipScannerZ = -2.0 + Math.cos(orbitT * 0.5) * 0.4;
+
+      const blipX = rcx + shipScannerX * rw * 0.75;
+      const blipY = rcy + (shipScannerZ + 2) * rh * 0.4;
+      const stalkLen = -shipScannerY * dashH * 0.45;
+      plotLine(lDash, blipX/cell, blipY/cell, blipX/cell, (blipY + stalkLen)/cell, 0.95, '│');
+      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell), 1.0, '◆');
+      plotPoint(lDash, Math.round(blipX/cell) + 1, Math.round((blipY + stalkLen)/cell), 1.0, '◆');
+      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell) + 1, 1.0, '◆');
+
+      /* --- side gauge clusters --- */
+      const gaugeW = W * 0.12;
+      const gaugeH = dashH * 0.6;
+      const leftX = rcx - rw - W * 0.025 - gaugeW;
+      const rightX = rcx + rw + W * 0.025;
+      const gaugeY = dashTop + dashH * 0.18;
+
+      function drawBarGauge(xStart, yStart, fill) {
+        // Outer rect (top edge)
+        plotLine(lDash, xStart/cell, yStart/cell, (xStart + gaugeW)/cell, yStart/cell, 0.55, '─');
+        // Filled portion. In proposed mode use solid block characters that
+        // read as a real bar; in current mode the brightness ramp will
+        // pick `█` automatically because brightness is high.
+        const fillW = gaugeW * fill;
+        const fillCh = blockChar(fill);
+        plotLine(lDash, xStart/cell, (yStart + 1)/cell, (xStart + fillW)/cell, (yStart + 1)/cell, 0.95, fillCh);
+        plotLine(lDash, xStart/cell, (yStart + 2)/cell, (xStart + fillW)/cell, (yStart + 2)/cell, 0.95, fillCh);
+      }
+      const gauges = [
+        { x: leftX,  fills: [0.85, 0.7, 0.6, 0.4] },
+        { x: rightX, fills: [0.95, 0.8, 0.5, 0.3] },
+      ];
+      for (const cluster of gauges) {
+        for (let i = 0; i < 4; i++) {
+          const y = gaugeY + i * (gaugeH / 4);
+          drawBarGauge(cluster.x, y, cluster.fills[i] + Math.sin(state.t * 2 + i) * 0.05);
+        }
+      }
+    }
+
+    /* ============================================================
+       RENDER: pick brightest layer per cell, draw glyph + bloom.
+       ============================================================ */
+    const layers = [lPlanet, lDust, lHull, lFrame, lDash];
+    const fontSize = Math.max(6, cell - 1);
+    const fontDecl = `${fontSize}px ui-monospace, "JetBrains Mono", "Fira Code", monospace`;
+    for (const L of layers) {
+      const b = getBucket(L.name);
+      b.ctx.clearRect(0, 0, W, H);
+      b.ctx.font = fontDecl;
+      b.ctx.textBaseline = 'middle';
+      b.ctx.textAlign = 'center';
+    }
+    ctx.font = fontDecl;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const idx = gy * cols + gx;
+        let bestV = 0, bestL = null;
+        for (const L of layers) {
+          if (L.intensity[idx] > bestV) { bestV = L.intensity[idx]; bestL = L; }
+        }
+        if (bestV < 0.06 || !bestL) continue;
+        // Use the layer's chosen glyph if any (proposed mode), else fall
+        // back to the brightness ramp (current mode).
+        const ch = bestL.chars[idx] || ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
+        const x = gx*cell + cell/2, y = gy*cell + cell/2;
+        const hue = bestL.hue;
+        const light = 50 + bestV * 38;
+
+        ctx.fillStyle = `hsl(${hue}, 90%, ${light}%)`;
+        ctx.fillText(ch, x, y);
+
+        const b = getBucket(bestL.name);
+        b.ctx.fillStyle = `hsl(${hue}, 95%, ${Math.min(95, light + 18)}%)`;
+        b.ctx.fillText(ch, x, y);
+      }
+    }
+
+    /* ---------- HUD text labels ---------- */
+    function glowText(text, x, y, hue, size, weight = '600') {
+      ctx.font = `${weight} ${size}px ui-monospace, "JetBrains Mono", monospace`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = `hsl(${hue}, 95%, 70%)`;
+      ctx.shadowBlur = 12 * state.glow;
+      ctx.fillStyle = `hsl(${hue}, 90%, 80%)`;
+      ctx.fillText(text, x, y);
+      ctx.shadowBlur = 0;
+    }
+
+    glowText('FRONT VIEW', W / 2, 28, PAL.frame, 13);
+
+    const dashTop = H * 0.72;
+    const dashH = H - 8 - dashTop;
+    const rcx = W * 0.5;
+    const rcy = dashTop + dashH * 0.55;
+    const rw = W * 0.16;
+
+    glowText('ELITE', rcx, rcy + dashH * 0.48, PAL.dash, 11);
+
+    const labels = [
+      { side: 'L', txt: 'FS', i: 0 }, { side: 'L', txt: 'AS', i: 1 },
+      { side: 'L', txt: 'FU', i: 2 }, { side: 'L', txt: 'CT', i: 3 },
+      { side: 'R', txt: 'SH', i: 0 }, { side: 'R', txt: 'EN', i: 1 },
+      { side: 'R', txt: 'AL', i: 2 }, { side: 'R', txt: 'MI', i: 3 },
+    ];
+    const gaugeW = W * 0.12;
+    const gaugeH = dashH * 0.6;
+    const leftX = rcx - rw - W * 0.025 - gaugeW;
+    const rightX = rcx + rw + W * 0.025;
+    const gaugeY = dashTop + dashH * 0.18;
+    for (const lbl of labels) {
+      const x = lbl.side === 'L' ? leftX - 14 : rightX + gaugeW + 14;
+      const y = gaugeY + lbl.i * (gaugeH / 4) + 4;
+      glowText(lbl.txt, x, y, PAL.dash, 9);
+    }
+
+    // Style indicator in the corner so it's clear which mode is active.
+    glowText(state.style === 'proposed' ? 'PROPOSED — large cells, deliberate glyphs'
+                                        : 'CURRENT — small cells, brightness ramp',
+             W / 2, H - 10, PAL.frame, 9, '400');
+
+    /* ---------- bloom each bucket ---------- */
+    if (state.glow > 0.01) {
+      ctx.globalCompositeOperation = 'lighter';
+      const passes = [
+        { blur: 2,  alpha: 0.65 },
+        { blur: 6,  alpha: 0.55 },
+        { blur: 16, alpha: 0.45 },
+        { blur: 36, alpha: 0.30 },
+      ];
+      for (const L of layers) {
+        const b = getBucket(L.name);
+        if (!b.canvas.width || !b.canvas.height) continue;
+        for (const p of passes) {
+          ctx.filter = `blur(${p.blur}px)`;
+          ctx.globalAlpha = p.alpha * state.glow;
+          ctx.drawImage(b.canvas, 0, 0, W, H);
+        }
+      }
+      ctx.filter = 'none';
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
