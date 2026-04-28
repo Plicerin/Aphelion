@@ -690,6 +690,79 @@
     line-height: 1.55;
     letter-spacing: 0.05em;
   }
+  .trade-pane.detail .detail-content .qty-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 18px;
+    margin-bottom: 12px;
+    justify-content: center;
+  }
+  .trade-pane.detail .detail-content .qty-row .qty-btn {
+    background: rgba(124, 247, 255, 0.06);
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 5px 9px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+    min-width: 32px;
+  }
+  .trade-pane.detail .detail-content .qty-row .qty-btn:hover {
+    background: rgba(124, 247, 255, 0.14);
+  }
+  .trade-pane.detail .detail-content .qty-row .qty-val {
+    color: hsl(38, 92%, 78%);
+    text-shadow: 0 0 6px hsl(38, 92%, 55%);
+    font-size: 16px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    min-width: 40px;
+    text-align: center;
+  }
+  .trade-pane.detail .detail-content .trade-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .trade-pane.detail .detail-content .trade-btn {
+    background: rgba(2, 6, 16, 0.5);
+    border: 1px solid;
+    border-radius: 4px;
+    padding: 10px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 700;
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+    transition: filter 0.1s;
+  }
+  .trade-pane.detail .detail-content .trade-btn.buy {
+    color: hsl(140, 80%, 75%);
+    border-color: hsl(140, 70%, 50%);
+    text-shadow: 0 0 6px hsl(140, 80%, 50%);
+    box-shadow: 0 0 10px rgba(80, 220, 130, 0.18) inset;
+  }
+  .trade-pane.detail .detail-content .trade-btn.sell {
+    color: hsl(38, 92%, 78%);
+    border-color: hsl(38, 92%, 55%);
+    text-shadow: 0 0 6px hsl(38, 92%, 50%);
+    box-shadow: 0 0 10px rgba(255, 200, 80, 0.18) inset;
+  }
+  .trade-pane.detail .detail-content .trade-btn:hover:not(:disabled) {
+    filter: brightness(1.2);
+  }
+  .trade-pane.detail .detail-content .trade-btn:disabled {
+    opacity: 0.32;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
 
   /* ============== Flight HUD ============== */
   #hud-bl, #hud-br {
@@ -1180,24 +1253,34 @@ const INITIAL_SHIP = { position:V_ZERO, orientation:Q_IDENTITY, velocity:V_ZERO,
 const CARGO_CAPACITY = 40;
 const INITIAL_CREDITS = 100;
 const COMMODITIES = [
-  { id:'food',         name:'Food',           glyph:'[#]',   basePrice:12, unit:'t'  },
-  { id:'textiles',     name:'Textiles',       glyph:'<~~>',  basePrice:18, unit:'t'  },
-  { id:'radioactives', name:'Radioactives',   glyph:'<*>',   basePrice:32, unit:'t'  },
-  { id:'indentured',   name:'Indentured',     glyph:'(o-o)', basePrice:28, unit:'t'  },
-  { id:'liquor',       name:'Liquor & Wines', glyph:'[V]',   basePrice:24, unit:'t'  },
-  { id:'luxuries',     name:'Luxuries',       glyph:'<*~*>', basePrice:78, unit:'t'  },
-  { id:'narcotics',    name:'Narcotics',      glyph:'[?]',   basePrice:95, unit:'t'  },
-  { id:'computers',    name:'Computers',      glyph:'[::]',  basePrice:64, unit:'t'  },
-  { id:'machinery',    name:'Machinery',      glyph:'[#=]',  basePrice:56, unit:'t'  },
-  { id:'alloys',       name:'Alloys',         glyph:'<==>',  basePrice:32, unit:'t'  },
-  { id:'firearms',     name:'Firearms',       glyph:'<!>',   basePrice:50, unit:'t'  },
-  { id:'furs',         name:'Furs',           glyph:'}~{',   basePrice:28, unit:'t'  },
-  { id:'minerals',     name:'Minerals',       glyph:'<.>',   basePrice:16, unit:'t'  },
-  { id:'gold',         name:'Gold',           glyph:'(Au)',  basePrice:4,  unit:'kg' },
-  { id:'platinum',     name:'Platinum',       glyph:'(Pt)',  basePrice:8,  unit:'kg' },
-  { id:'gemstones',    name:'Gem-Stones',     glyph:'<◇>',   basePrice:12, unit:'kg' },
-  { id:'alien',        name:'Alien Items',    glyph:'<?!>',  basePrice:60, unit:'t'  },
+  { id:'food',         name:'Food',           glyph:'[#]',   basePrice:12, unit:'t',  gradient:-0.8, techBias: 0    },
+  { id:'textiles',     name:'Textiles',       glyph:'<~~>',  basePrice:18, unit:'t',  gradient:-0.5, techBias: 0    },
+  { id:'radioactives', name:'Radioactives',   glyph:'<*>',   basePrice:32, unit:'t',  gradient: 0.3, techBias:-0.1  },
+  { id:'indentured',   name:'Indentured',     glyph:'(o-o)', basePrice:28, unit:'t',  gradient: 0.2, techBias: 0    },
+  { id:'liquor',       name:'Liquor & Wines', glyph:'[V]',   basePrice:24, unit:'t',  gradient:-0.6, techBias: 0    },
+  { id:'luxuries',     name:'Luxuries',       glyph:'<*~*>', basePrice:78, unit:'t',  gradient: 0.2, techBias: 0    },
+  { id:'narcotics',    name:'Narcotics',      glyph:'[?]',   basePrice:95, unit:'t',  gradient: 0.4, techBias: 0    },
+  { id:'computers',    name:'Computers',      glyph:'[::]',  basePrice:64, unit:'t',  gradient: 0.8, techBias:-0.3  },
+  { id:'machinery',    name:'Machinery',      glyph:'[#=]',  basePrice:56, unit:'t',  gradient: 0.7, techBias:-0.2  },
+  { id:'alloys',       name:'Alloys',         glyph:'<==>',  basePrice:32, unit:'t',  gradient: 0.6, techBias:-0.1  },
+  { id:'firearms',     name:'Firearms',       glyph:'<!>',   basePrice:50, unit:'t',  gradient: 0.5, techBias:-0.1  },
+  { id:'furs',         name:'Furs',           glyph:'}~{',   basePrice:28, unit:'t',  gradient:-0.6, techBias: 0    },
+  { id:'minerals',     name:'Minerals',       glyph:'<.>',   basePrice:16, unit:'t',  gradient:-0.3, techBias: 0    },
+  { id:'gold',         name:'Gold',           glyph:'(Au)',  basePrice:4,  unit:'kg', gradient: 0,   techBias: 0    },
+  { id:'platinum',     name:'Platinum',       glyph:'(Pt)',  basePrice:8,  unit:'kg', gradient: 0,   techBias: 0    },
+  { id:'gemstones',    name:'Gem-Stones',     glyph:'<◇>',   basePrice:12, unit:'kg', gradient: 0.1, techBias: 0    },
+  { id:'alien',        name:'Alien Items',    glyph:'<?!>',  basePrice:60, unit:'t',  gradient: 0.4, techBias: 0    },
 ];
+const ECONOMY_INDEX = {
+  'rich-industrial':       0,
+  'average-industrial':    1,
+  'poor-industrial':       2,
+  'mainly-industrial':     3,
+  'mainly-agricultural':   4,
+  'rich-agricultural':     5,
+  'average-agricultural':  6,
+  'poor-agricultural':     7,
+};
 function emptyCargo(){
   const out = {};
   for(const c of COMMODITIES) out[c.id] = 0;
@@ -1209,6 +1292,47 @@ function cargoUsed(cargo){
     if(c.unit === 't') total += cargo[c.id] || 0;
   }
   return total;
+}
+function priceFlux(seed, commodityId){
+  let h = 0x9e3779b1;
+  for(let i = 0; i < commodityId.length; i++){
+    h = ((h ^ commodityId.charCodeAt(i)) * 16777619) | 0;
+  }
+  h ^= seed[0];
+  h = ((h * 31) ^ seed[1]) | 0;
+  h = ((h * 31) ^ seed[2]) | 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return ((h % 2001) - 1000) / 10000;
+}
+function priceForSystem(commodity, system){
+  const econIdx = ECONOMY_INDEX[system.economy];
+  const econMod = (econIdx - 3.5) / 3.5;
+  const econFactor = 1 + 0.5 * commodity.gradient * econMod;
+  const techFactor = 1 + commodity.techBias * (system.techLevel - 8) / 7;
+  const flux = priceFlux(system.seed, commodity.id);
+  const raw = commodity.basePrice * econFactor * techFactor * (1 + flux);
+  return Math.max(1, Math.round(raw));
+}
+function canBuy(price, n, cargoTonnesUsed, capacity, credits, isTonne){
+  if(n < 1) return false;
+  if(credits < price * n - 1e-9) return false;
+  if(isTonne && cargoTonnesUsed + n > capacity) return false;
+  return true;
+}
+function canSell(held, n){
+  return n >= 1 && held >= n;
+}
+function applyBuy(cargo, credits, commodityId, n, price){
+  return {
+    cargo: { ...cargo, [commodityId]: (cargo[commodityId] || 0) + n },
+    credits: credits - price * n,
+  };
+}
+function applySell(cargo, credits, commodityId, n, price){
+  return {
+    cargo: { ...cargo, [commodityId]: (cargo[commodityId] || 0) - n },
+    credits: credits + price * n,
+  };
 }
 
 /* ===== 5c. Cockpit sim functions =====
@@ -2903,16 +3027,12 @@ function dispatch(action){
     saveGame(game.galaxyIdx, game.currentSystemSeed);
   }
 }
-/* ---- Trade screen rendering ----
-   Populates the 3-pane docked overlay from game state + COMMODITIES.
-   Prices are placeholder (basePrice for now); the per-system price
-   model lands in the next pass. Selection state lives in module
-   scope since it's purely UI affordance. */
+/* ---- Trade screen rendering ---- */
 let _tradeSelectedId = COMMODITIES[0].id;
+let _tradeQty = 1;
 
 function renderTradeScreen(sys){
   if(!sys) return;
-  // Header bits
   document.getElementById('marketSystemName').textContent = sys.name;
   document.getElementById('marketSystemMeta').textContent =
     `${sys.economy.toUpperCase()} · TL ${sys.techLevel}`;
@@ -2921,7 +3041,7 @@ function renderTradeScreen(sys){
   document.getElementById('cargoUsedEl').textContent = cargoUsed(game.cargo || emptyCargo());
   document.getElementById('cargoCapEl').textContent = CARGO_CAPACITY;
 
-  // Cargo list
+  // Cargo list — show held quantity per commodity.
   const cargoList = document.getElementById('cargoList');
   cargoList.innerHTML = '';
   for(const c of COMMODITIES){
@@ -2938,44 +3058,111 @@ function renderTradeScreen(sys){
     cargoList.appendChild(row);
   }
 
-  // Market list
+  // Market list — per-system prices, with a vs-base trend indicator.
   const marketList = document.getElementById('marketList');
   marketList.innerHTML = '';
   for(const c of COMMODITIES){
+    const price = priceForSystem(c, sys);
+    const ratio = price / c.basePrice;
+    let trend = '─';
+    if(ratio > 1.15) trend = '▲';
+    else if(ratio < 0.85) trend = '▼';
     const row = document.createElement('div');
     row.className = 'commodity-row' + (c.id === _tradeSelectedId ? ' selected' : '');
     row.dataset.id = c.id;
     row.innerHTML = `
       <span class="glyph">${c.glyph}</span>
       <span class="name">${c.name}</span>
-      <span class="price">${c.basePrice} cr</span>
-      <span class="qty">— ${c.unit}</span>`;
+      <span class="price">${price} cr</span>
+      <span class="qty">${trend} ${c.unit}</span>`;
     row.addEventListener('click', () => selectCommodity(c.id));
     marketList.appendChild(row);
   }
 
-  // Detail pane
+  // Detail pane — quantity selector + Buy / Sell controls.
   const sel = COMMODITIES.find(c => c.id === _tradeSelectedId);
   const detail = document.getElementById('detailContent');
-  if(sel){
-    const held = (game.cargo && game.cargo[sel.id]) || 0;
-    detail.innerHTML = `
-      <h3>${sel.name}</h3>
-      <div class="glyph-big">${sel.glyph}</div>
-      <div class="row"><span class="lbl">Market price</span><span class="v">${sel.basePrice} cr / ${sel.unit}</span></div>
-      <div class="row"><span class="lbl">Galactic avg</span><span class="v">${sel.basePrice} cr</span></div>
-      <div class="row"><span class="lbl">Held</span><span class="v">${held} ${sel.unit}</span></div>
-      <div class="row"><span class="lbl">Trend</span><span class="v">— flat</span></div>
-      <div class="stub-note">
-        Buy / sell controls land in the next pass. Today: data shape +
-        layout only. Per-system pricing will tilt this entry up or down
-        from the galactic average based on Lave's economy and tech level.
-      </div>`;
+  if(!sel){ detail.innerHTML = ''; return; }
+  const held = (game.cargo && game.cargo[sel.id]) || 0;
+  const price = priceForSystem(sel, sys);
+  const isTonne = sel.unit === 't';
+  const usedT = cargoUsed(game.cargo || emptyCargo());
+  const credits = Math.round(game.credits || 0);
+
+  // Clamp the quantity so the displayed total stays sensible — the
+  // canBuy/canSell gates re-check on click, so this is just visual.
+  if(_tradeQty < 1) _tradeQty = 1;
+  const buyOK  = canBuy(price, _tradeQty, usedT, CARGO_CAPACITY, credits, isTonne);
+  const sellOK = canSell(held, _tradeQty);
+  const total  = price * _tradeQty;
+  const ratio  = price / sel.basePrice;
+  const trendText = ratio > 1.15 ? `+${Math.round((ratio - 1) * 100)}% vs avg`
+                  : ratio < 0.85 ? `${Math.round((ratio - 1) * 100)}% vs avg`
+                  : 'near galactic avg';
+
+  detail.innerHTML = `
+    <h3>${sel.name}</h3>
+    <div class="glyph-big">${sel.glyph}</div>
+    <div class="row"><span class="lbl">Market price</span><span class="v">${price} cr / ${sel.unit}</span></div>
+    <div class="row"><span class="lbl">Galactic avg</span><span class="v">${sel.basePrice} cr</span></div>
+    <div class="row"><span class="lbl">Trend</span><span class="v">${trendText}</span></div>
+    <div class="row"><span class="lbl">In hold</span><span class="v">${held} ${sel.unit}</span></div>
+
+    <div class="qty-row">
+      <button class="qty-btn" data-q="-10">−10</button>
+      <button class="qty-btn" data-q="-1">−</button>
+      <span class="qty-val">${_tradeQty}</span>
+      <button class="qty-btn" data-q="+1">+</button>
+      <button class="qty-btn" data-q="+10">+10</button>
+    </div>
+
+    <div class="trade-actions">
+      <button class="trade-btn buy"  ${buyOK  ? '' : 'disabled'}>BUY  ${total} cr</button>
+      <button class="trade-btn sell" ${sellOK ? '' : 'disabled'}>SELL ${total} cr</button>
+    </div>
+
+    <p class="hint">${
+      !buyOK && credits < total ? 'Insufficient credits.' :
+      !buyOK && isTonne && usedT + _tradeQty > CARGO_CAPACITY ? 'Cargo hold full.' :
+      !sellOK && held === 0 ? 'You aren’t carrying any.' :
+      !sellOK ? `You only hold ${held} ${sel.unit}.` :
+      'Click BUY to purchase, SELL to liquidate. Use ↑/↓ to switch commodity.'
+    }</p>
+  `;
+
+  // Wire up the quantity buttons (delta-based)
+  for(const btn of detail.querySelectorAll('.qty-btn')){
+    btn.addEventListener('click', () => {
+      const d = parseInt(btn.dataset.q, 10);
+      _tradeQty = Math.max(1, _tradeQty + d);
+      renderTradeScreen(sys);
+    });
+  }
+  // Wire BUY / SELL buttons
+  const buyBtn = detail.querySelector('.trade-btn.buy');
+  const sellBtn = detail.querySelector('.trade-btn.sell');
+  if(buyBtn){
+    buyBtn.addEventListener('click', () => {
+      if(!canBuy(price, _tradeQty, cargoUsed(game.cargo), CARGO_CAPACITY, game.credits, isTonne)) return;
+      const r = applyBuy(game.cargo, game.credits, sel.id, _tradeQty, price);
+      game = { ...game, cargo: r.cargo, credits: r.credits };
+      renderTradeScreen(sys);
+    });
+  }
+  if(sellBtn){
+    sellBtn.addEventListener('click', () => {
+      const heldNow = (game.cargo && game.cargo[sel.id]) || 0;
+      if(!canSell(heldNow, _tradeQty)) return;
+      const r = applySell(game.cargo, game.credits, sel.id, _tradeQty, price);
+      game = { ...game, cargo: r.cargo, credits: r.credits };
+      renderTradeScreen(sys);
+    });
   }
 }
 
 function selectCommodity(id){
   _tradeSelectedId = id;
+  _tradeQty = 1;     // reset quantity when switching
   const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
   renderTradeScreen(sys);
 }
