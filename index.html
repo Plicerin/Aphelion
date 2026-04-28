@@ -1885,11 +1885,61 @@ addEventListener('keydown', (e)=>{ if(e.key==='Escape') themePicker.classList.re
 const _initialGalaxies = generateAllGalaxies();
 const _startingSystem = _initialGalaxies[0].systems[0];
 
+/* ---- save / load (mirror of src/sim/save.ts) ----
+   Persists a minimal slice of state to localStorage so progress survives
+   reloads. Only fields the player has *chosen* are saved — everything
+   that's a function of the seed regenerates, everything transient resets. */
+const SAVE_KEY = 'aphelion.save';
+const SAVE_VERSION = 1;
+function saveGame(galaxyIdx, currentSystemSeed){
+  try {
+    const payload = { version: SAVE_VERSION, galaxyIdx, currentSystemSeed };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+    return true;
+  } catch { return false; }
+}
+function loadGame(){
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return null;
+    const p = JSON.parse(raw);
+    if(!p || typeof p !== 'object') return null;
+    if(typeof p.version !== 'number' || p.version > SAVE_VERSION) return null;
+    if(typeof p.galaxyIdx !== 'number' || p.galaxyIdx < 0 || p.galaxyIdx > 7) return null;
+    if(!Array.isArray(p.currentSystemSeed) || p.currentSystemSeed.length !== 3) return null;
+    for(const v of p.currentSystemSeed){
+      if(typeof v !== 'number' || v < 0 || v > 0xffff) return null;
+    }
+    return { galaxyIdx: p.galaxyIdx, currentSystemSeed: p.currentSystemSeed };
+  } catch { return null; }
+}
+
+// Try to restore. If anything's wrong with the save (corrupt, future
+// version, missing system) we silently fall back to the starting state.
+const _savedGame = loadGame();
+let _initialGalaxyIdx = 0;
+let _initialSystemSeed = _startingSystem.seed;
+if(_savedGame){
+  // Validate the saved system actually exists in the saved galaxy. Saves
+  // older than the current seed-generation algorithm could reference a
+  // system that no longer exists in that slot — better to start fresh.
+  const savedGalaxy = _initialGalaxies[_savedGame.galaxyIdx];
+  const savedSystem = savedGalaxy?.systems.find(s =>
+    s.seed[0] === _savedGame.currentSystemSeed[0] &&
+    s.seed[1] === _savedGame.currentSystemSeed[1] &&
+    s.seed[2] === _savedGame.currentSystemSeed[2]
+  );
+  if(savedSystem){
+    _initialGalaxyIdx = _savedGame.galaxyIdx;
+    _initialSystemSeed = _savedGame.currentSystemSeed;
+  }
+}
+
 let game = {
   screen: 'chart',
   galaxies: _initialGalaxies,
-  galaxyIdx: 0,
-  currentSystemSeed: _startingSystem.seed,
+  galaxyIdx: _initialGalaxyIdx,
+  currentSystemSeed: _initialSystemSeed,
   selectedSystemSeed: null,
   ship: INITIAL_SHIP,
   hyperspaceT: 0,
@@ -1897,9 +1947,17 @@ let game = {
 };
 
 function dispatch(action){
+  const prev = game;
   game = { ...game, ...reduce(game, action) };
   document.body.dataset.screen = game.screen;
   updateTitle();
+  // Auto-save after any action that changed persistent state. We compare
+  // against the previous values rather than always saving so we don't
+  // hammer localStorage on every dispatch.
+  if(prev.galaxyIdx !== game.galaxyIdx ||
+     prev.currentSystemSeed !== game.currentSystemSeed){
+    saveGame(game.galaxyIdx, game.currentSystemSeed);
+  }
 }
 function updateTitle(){
   const sub = document.getElementById('title-sub');
@@ -1924,7 +1982,8 @@ for(let i=0;i<8;i++){
   const b = document.createElement('button');
   b.textContent = (i+1).toString();
   b.title = game.galaxies[i].name;
-  if(i===0) b.classList.add('on');
+  // Activate whichever galaxy was loaded — defaults to 0 for new saves.
+  if(i === game.galaxyIdx) b.classList.add('on');
   b.addEventListener('click', ()=>{
     chartLocked = null;
     cancelCountdown();
