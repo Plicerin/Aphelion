@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>APHELION</title>
+<style>
+  :root {
+    --bg: #02030a;
+    --panel: rgba(10, 16, 32, 0.78);
+    --border: rgba(120, 200, 255, 0.22);
+    --ink: #cfe7ff;
+    --muted: #6b7a99;
+    --accent: #7cf7ff;
+    --warn: #ffb84a;
+  }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+    height: 100%;
+  }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.85) 100%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 3px);
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  #stage { position: fixed; inset: 0; display: block; z-index: 1; cursor: crosshair; }
+
+  /* ============== Title bar (shared across screens) ============== */
+  #title {
+    position: fixed;
+    top: 14px; left: 0; right: 0;
+    z-index: 6;
+    text-align: center;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.5em;
+    text-transform: uppercase;
+    text-shadow: 0 0 8px var(--accent);
+    pointer-events: none;
+  }
+  #title .sub {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.25em;
+    text-shadow: none;
+  }
+
+  /* Sections that show only on certain screens. Toggled by data-screen. */
+  body[data-screen="chart"] .show-flight,
+  body[data-screen="chart"] .show-hyperspace { display: none; }
+  body[data-screen="hyperspace"] .show-chart,
+  body[data-screen="hyperspace"] .show-flight { display: none; }
+  body[data-screen="flight"] .show-chart,
+  body[data-screen="flight"] .show-hyperspace { display: none; }
+
+  /* ============== Theme picker ============== */
+  #theme-picker {
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 6;
+    font-size: 11px;
+  }
+  #theme-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    min-width: 180px;
+    transition: border-color 0.15s;
+  }
+  #theme-button:hover { border-color: var(--accent); }
+  #theme-button .label {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  #theme-button .name { flex: 1; }
+  #theme-button .chevron { color: var(--muted); font-size: 9px; transition: transform 0.15s; }
+  #theme-picker.open #theme-button .chevron { transform: rotate(180deg); }
+  #theme-menu {
+    margin-top: 4px;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    display: none;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  }
+  #theme-picker.open #theme-menu { display: block; }
+  #theme-menu .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--ink);
+    transition: background 0.1s;
+  }
+  #theme-menu .item:hover { background: rgba(255, 255, 255, 0.06); }
+  #theme-menu .item.on { background: rgba(124, 247, 255, 0.10); }
+  #theme-menu .item .swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    flex-shrink: 0;
+  }
+  #theme-menu .item .name { flex: 1; font-size: 11px; letter-spacing: 0.03em; }
+  #theme-menu .item .check { color: var(--accent); font-size: 11px; opacity: 0; }
+  #theme-menu .item.on .check { opacity: 1; }
+
+  /* ============== Galaxy tabs (chart screen) ============== */
+  #galaxy-tabs {
+    position: fixed;
+    top: 14px; right: 14px;
+    z-index: 6;
+    display: flex;
+    gap: 3px;
+  }
+  #galaxy-tabs button {
+    width: 26px; height: 22px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  #galaxy-tabs button:hover { color: var(--accent); background: rgba(124, 247, 255, 0.05); }
+  #galaxy-tabs button.on {
+    background: var(--accent);
+    color: #02030a;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+
+  /* ============== Chart info strip ============== */
+  #info {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    z-index: 6;
+    background: var(--panel);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    border-top: 1px solid var(--border);
+    padding: 14px 24px 18px;
+    font-size: 11px;
+    line-height: 1.5;
+    height: 168px;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: 1fr 42px;
+    gap: 10px;
+  }
+  #info .stats-row {
+    display: grid;
+    grid-template-columns: 320px repeat(4, minmax(140px, 1fr));
+    gap: 24px;
+    align-items: stretch;
+    min-height: 0;
+  }
+  #info .hero {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 16px;
+    align-items: center;
+    border-right: 1px solid var(--border);
+    padding-right: 20px;
+    min-width: 0;
+  }
+  #info .planet { width: 84px; height: 84px; position: relative; }
+  #info .planet canvas { width: 100%; height: 100%; display: block; }
+  #info .hero-text { min-width: 0; }
+  #info h2 {
+    margin: 0 0 8px;
+    color: var(--accent);
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-shadow: 0 0 12px var(--accent);
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #info .hero-text .lbl {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 1px;
+  }
+  #info .hero-text .v {
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+    letter-spacing: 0.06em;
+  }
+  #info .cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #info .cell .pair {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+  #info .cell .lbl {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  #info .cell .v {
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  #info .cell .v.warn { color: var(--warn); }
+  #info .description {
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.5;
+    font-style: italic;
+    opacity: 0.92;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    mask-image: linear-gradient(180deg, black 70%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, black 70%, transparent 100%);
+  }
+
+  /* ============== Hyperspace jump button (chart screen) ============== */
+  #jump-btn {
+    position: fixed;
+    /* Sits above the info strip, on the right side */
+    bottom: 184px; right: 24px;
+    z-index: 7;
+    background: var(--accent);
+    color: #02030a;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(124, 247, 255, 0.4);
+    transition: transform 0.1s, box-shadow 0.15s;
+  }
+  #jump-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 28px rgba(124, 247, 255, 0.6);
+  }
+  #jump-btn:disabled {
+    background: transparent;
+    color: var(--muted);
+    border-color: var(--border);
+    cursor: not-allowed;
+    box-shadow: none;
+    transform: none;
+  }
+
+  /* ============== Flight HUD ============== */
+  #hud-bl, #hud-br {
+    position: fixed;
+    bottom: 16px;
+    z-index: 6;
+    color: var(--accent);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-shadow: 0 0 6px var(--accent);
+    line-height: 1.6;
+    pointer-events: none;
+  }
+  #hud-bl { left: 24px; }
+  #hud-br { right: 24px; text-align: right; }
+  #hud-bl .lbl, #hud-br .lbl { color: var(--muted); text-shadow: none; font-size: 9px; }
+  #hud-bl .v, #hud-br .v { font-variant-numeric: tabular-nums; }
+
+  /* "Open chart" button visible in flight */
+  #open-chart-btn {
+    position: fixed;
+    top: 14px; right: 14px;
+    z-index: 7;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  #open-chart-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ============== Legend (per-screen help text) ============== */
+  .legend {
+    position: fixed;
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    line-height: 1.6;
+    pointer-events: none;
+    z-index: 6;
+  }
+  .legend strong { color: var(--accent); font-weight: 600; }
+  /* Chart legend: above the info strip on the right. */
+  body[data-screen="chart"] .legend.chart-legend {
+    bottom: 184px; right: 220px; text-align: right;
+    display: block;
+  }
+  body[data-screen="chart"] .legend.flight-legend { display: none; }
+  /* Flight legend: top right corner. */
+  body[data-screen="flight"] .legend.flight-legend {
+    top: 60px; right: 14px; text-align: right;
+    display: block;
+  }
+  body[data-screen="flight"] .legend.chart-legend { display: none; }
+  body[data-screen="hyperspace"] .legend { display: none; }
+</style>
+</head>
+<body data-screen="chart">
+  <canvas id="stage"></canvas>
+
+  <!-- Title (always visible) -->
+  <div id="title">
+    APHELION
+    <div class="sub" id="title-sub">GALACTIC CHART</div>
+  </div>
+
+  <!-- Theme picker (always visible) -->
+  <div id="theme-picker">
+    <button id="theme-button" type="button" aria-haspopup="listbox" aria-expanded="false">
+      <span class="label">Theme</span>
+      <span class="name" id="theme-current">—</span>
+      <span class="chevron">▾</span>
+    </button>
+    <div id="theme-menu" role="listbox"></div>
+  </div>
+
+  <!-- Galaxy tabs (chart screen only) -->
+  <div id="galaxy-tabs" class="show-chart"></div>
+
+  <!-- Chart info strip (chart screen only) -->
+  <div id="info" class="show-chart">
+    <div class="stats-row">
+      <div class="hero">
+        <div class="planet"><canvas id="planetCanvas" width="144" height="144"></canvas></div>
+        <div class="hero-text">
+          <h2 id="sysName">—</h2>
+          <span class="lbl">Coordinates</span>
+          <span class="v" id="sysCoords">—</span>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="pair"><span class="lbl">Economy</span><span class="v" id="sysEcon">—</span></div>
+        <div class="pair"><span class="lbl">Government</span><span class="v" id="sysGov">—</span></div>
+      </div>
+      <div class="cell">
+        <div class="pair"><span class="lbl">Tech Level</span><span class="v" id="sysTech">—</span></div>
+        <div class="pair"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
+      </div>
+      <div class="cell">
+        <div class="pair"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
+        <div class="pair"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
+      </div>
+      <div class="cell">
+        <div class="pair"><span class="lbl">Inhabitants</span><span class="v" id="sysPeople">—</span></div>
+        <div class="pair"><span class="lbl">Status</span><span class="v" id="sysStatus">—</span></div>
+      </div>
+    </div>
+    <div class="description" id="sysDesc">—</div>
+  </div>
+
+  <!-- Hyperspace jump button (chart screen only) -->
+  <button id="jump-btn" class="show-chart" type="button" disabled>JUMP TO —</button>
+
+  <!-- Flight HUD (flight screen only) -->
+  <div id="hud-bl" class="show-flight">
+    <div><span class="lbl">SPEED</span> <span class="v" id="hSpeed">0.0</span></div>
+    <div><span class="lbl">THROTTLE</span> <span class="v" id="hThr">0%</span></div>
+  </div>
+  <div id="hud-br" class="show-flight">
+    <div><span class="lbl">SYSTEM</span> <span class="v" id="hSystem">—</span></div>
+    <div><span class="lbl">PITCH</span> <span class="v" id="hPitch">0°</span></div>
+    <div><span class="lbl">YAW</span> <span class="v" id="hYaw">0°</span></div>
+  </div>
+  <button id="open-chart-btn" class="show-flight" type="button">◤ Galactic Chart</button>
+
+  <!-- Legends -->
+  <div class="legend chart-legend">
+    MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY · <strong>ENTER</strong> JUMP
+  </div>
+  <div class="legend flight-legend">
+    <strong>W A S D</strong> PITCH/YAW · <strong>Q E</strong> ROLL<br>
+    <strong>SHIFT</strong> THROTTLE UP · <strong>CTRL</strong> DOWN
+  </div>
+
+<script type="module">
+/* ============================================================================
+   APHELION — single-file app
+   ----------------------------------------------------------------------------
+   Sections:
+     1. Vec / quat math      — mirror of src/sim/vec.ts
+     2. Galaxy generator     — mirror of src/galaxy/*
+     3. Description grammar  — mirror of src/galaxy/describe.ts
+     4. Theme system         — mirror of src/theme.ts
+     5. Ship sim             — mirror of src/sim/ship.ts
+     6. Game state           — mirror of src/sim/state.ts
+     7. Input layer
+     8. Render foundations   — canvas, buckets, ramp, bloom helpers
+     9. Planet renderer      — for the chart info strip
+    10. Chart screen
+    11. Flight screen
+    12. Hyperspace screen
+    13. Theme picker UI
+    14. Main loop + screen manager
+   ============================================================================ */
+
+/* ===== 1. Vec / quat math ===== */
+const V_ZERO=[0,0,0], V_FORWARD=[0,0,1], V_UP=[0,1,0], V_RIGHT=[1,0,0];
+const Q_IDENTITY=[0,0,0,1];
+function vAdd(a,b){return[a[0]+b[0],a[1]+b[1],a[2]+b[2]]}
+function vScale(a,s){return[a[0]*s,a[1]*s,a[2]*s]}
+function vLength(a){return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2])}
+function vNormalize(a){const l=vLength(a);return l<1e-9?V_ZERO:[a[0]/l,a[1]/l,a[2]/l]}
+function qRotate(q,v){
+  const[x,y,z,w]=q,[vx,vy,vz]=v;
+  const tx=2*(y*vz-z*vy), ty=2*(z*vx-x*vz), tz=2*(x*vy-y*vx);
+  return[vx+w*tx+(y*tz-z*ty), vy+w*ty+(z*tx-x*tz), vz+w*tz+(x*ty-y*tx)];
+}
+function qMul(a,b){
+  const[ax,ay,az,aw]=a,[bx,by,bz,bw]=b;
+  return[aw*bx+ax*bw+ay*bz-az*by, aw*by-ax*bz+ay*bw+az*bx, aw*bz+ax*by-ay*bx+az*bw, aw*bw-ax*bx-ay*by-az*bz];
+}
+function qConjugate(q){return[-q[0],-q[1],-q[2],q[3]]}
+function qFromAxisAngle(axis,angle){
+  const h=angle*0.5, s=Math.sin(h), n=vNormalize(axis);
+  return[n[0]*s, n[1]*s, n[2]*s, Math.cos(h)];
+}
+function qNormalize(q){
+  const l=Math.sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+  return l<1e-9?Q_IDENTITY:[q[0]/l,q[1]/l,q[2]/l,q[3]/l];
+}
+
+/* ===== 2. Galaxy generator ===== */
+const SYLLABLES = [
+  'AR','EN','TI','OS','EX','AL','IR','AN','OR','EL','US','IS','AT','ON','IL','EM',
+  'XO','VE','RI','KA','ME','TU','ZA','GE','NO','LA','CE','PI','SO','DA','BE','HE',
+];
+const GALAXY_PREFIXES = ['Sol','Ves','Aur','Lyr','Mer','Cal','Hes','Dor','Per','Ari','Cor','Eos','Lum','Tha','Nym','Ele'];
+const GALAXY_MIDDLES  = ['an','er','ad','om','al','in','es','on','ar','el','ir','us','ol','iv','um','as'];
+const GALAXY_SUFFIXES = ['ia','us','on','is','ae','or','um','ix'];
+const ECONOMIES = ['Rich Industrial','Average Industrial','Poor Industrial','Mainly Industrial',
+                   'Mainly Agricultural','Rich Agricultural','Average Agricultural','Poor Agricultural'];
+const GOVERNMENTS = ['Anarchy','Feudal','Multi-Government','Dictatorship','Communist','Confederacy','Democracy','Corporate State'];
+const APHELION_SEED = [0x5a4a, 0x0248, 0xb753];
+const MASK_16 = 0xffff;
+
+function twistOnce([s0,s1,s2]){return[s1, s2, (s0+s1+s2)&MASK_16]}
+function rotateGalaxy(triple){
+  return triple.map(n=>{
+    const hi=(n>>8)&0xff, lo=n&0xff;
+    return(((hi<<1)|(hi>>7))&0xff)<<8 | (((lo<<1)|(lo>>7))&0xff);
+  });
+}
+function nameFromSeed([s0,s1,s2]){
+  const idx=[(s1>>8)&0x1f, s1&0x1f, (s2>>8)&0x1f, s2&0x1f];
+  const lenBits = s0&0x3;
+  const count = lenBits===0?2 : lenBits===3?4 : 3;
+  let name='';
+  for(let i=0;i<count;i++) name += SYLLABLES[idx[i]];
+  return name.charAt(0)+name.slice(1).toLowerCase();
+}
+function galaxyNameFromSeed([s0,s1,s2]){
+  const p=GALAXY_PREFIXES[(s1>>4)&0xf];
+  const m=GALAXY_MIDDLES[(s2>>4)&0xf];
+  const sf=GALAXY_SUFFIXES[s2&0x7];
+  return ((s0&0x4)!==0) ? p+m+sf : p+sf;
+}
+function systemFromSeed(seed,index){
+  const[s0,s1,s2]=seed;
+  const x=(s0>>8)&0xff, y=(s0&0xff)>>1;
+  let econIdx=(s2>>8)&0x7;
+  if(y>96 && econIdx<4) econIdx+=4;
+  if(y<32 && econIdx>=4) econIdx-=4;
+  const govIdx=(s1>>11)&0x7;
+  const wealthScore=econIdx<4?4-econIdx:econIdx-3;
+  const stability=govIdx;
+  const noise=(s2&0x3)+1;
+  const techLevel=Math.min(15, Math.max(1, stability+wealthScore+noise));
+  const population=(techLevel*4 + stability + econIdx)/10;
+  const productivity=((stability+3)*(wealthScore+4)*8 + techLevel*100)|0;
+  const radius=4000 + (((s2>>8)&0xf)*256) + (s1&0xff);
+  return {
+    index, name:nameFromSeed(seed), x, y,
+    economy:ECONOMIES[econIdx], government:GOVERNMENTS[govIdx],
+    techLevel, population:Math.round(population*10)/10, productivity, radius,
+    seed,
+  };
+}
+function generateGalaxy(startSeed){
+  const systems=[];
+  let cur=startSeed;
+  for(let i=0;i<256;i++){ cur=twistOnce(cur); systems.push(systemFromSeed(cur, i)); }
+  return { name:galaxyNameFromSeed(startSeed), systems };
+}
+function generateAllGalaxies(){
+  const out=[];
+  let seed=APHELION_SEED;
+  for(let g=0;g<8;g++){ out.push(generateGalaxy(seed)); seed=rotateGalaxy(seed); }
+  return out;
+}
+function findSystemBySeed(galaxies, seed){
+  if(!seed) return null;
+  for(const g of galaxies){
+    for(const s of g.systems){
+      if(s.seed[0]===seed[0] && s.seed[1]===seed[1] && s.seed[2]===seed[2]) return s;
+    }
+  }
+  return null;
+}
+
+/* ===== 3. Description grammar ===== */
+const DESC = {
+  pleasant:['fabled','remarkable','renowned','celebrated','unusual','curious','splendid','storied','beguiling','idyllic','breathtaking','serene'],
+  grim:['forsaken','troubled','unforgiving','inhospitable','sweltering','frigid','plague-ridden','lawless','restless','crumbling'],
+  neutral:['peculiar','unconventional','odd','sleepy','quiet','ordinary','unassuming','modest','small','sprawling'],
+  features:['oceans','mountains','deserts','glaciers','crystal forests','singing caves','salt plains','lava tubes','mist gardens','iron jungles','amber lakes','wind valleys'],
+  cultural:['three suns','twin moons','rings of dust','low gravity','long winters','unusual tides','permanent twilight','extraordinary storms'],
+  products:['cuisine','wines','tea','spices','silks','glasswork','pottery','poetry','mathematics','shipwrights','clockmakers','tailors'],
+  grimCrafts:['mercenaries','smugglers','forgers','pirates','tax collectors','bureaucrats','lawyers','inspectors'],
+  creatures:['beetles','fish','birds','lizards','crabs','wolves','cats','rabbits','jellyfish','turtles'],
+  cQual:['venomous','enormous','invisible','singing','philosophical','territorial','short-tempered','remarkably patient','extremely small','mildly poisonous'],
+  absurd:[
+    'its inhabitants greet each other by reciting prime numbers',
+    'tourists are required to register their dreams on arrival',
+    'the official language has no past tense',
+    'all music is performed underwater',
+    'the planetary clock runs backwards on Tuesdays',
+    'every meal is preceded by a thirty-minute apology',
+    'the local currency is a kind of cheese',
+    'no two clouds are alike, by law',
+    'public speaking is illegal between sunset and midnight',
+    'the mail is delivered exclusively by trained crows',
+  ],
+  hazards:['the local ground crews','the orbital traffic','the ash storms','the customs officers','the unpredictable suns','the corporate police','the wild moons'],
+  famousFor:['famous for','renowned for','best known for','celebrated for','notorious for','occasionally remembered for'],
+  homeTo:['home to','the birthplace of','where you can find','the only place with'],
+};
+function makeDescRng(seed){
+  let st=(seed[0]^(seed[1]<<8)^(seed[2]<<16)^(seed[0]<<24))>>>0;
+  for(let i=0;i<4;i++) st=(Math.imul(st, 1664525)+1013904223)>>>0;
+  return {
+    next(){ st=(Math.imul(st, 1664525)+1013904223)>>>0; return st; },
+    pick(arr){ return arr[this.next()%arr.length]; },
+    chance(p){ return (this.next()&0xffff)/0x10000 < p; },
+  };
+}
+function adjPool(sys){
+  const wealthy = sys.economy.startsWith('Rich')||sys.economy.startsWith('Average');
+  const stable = sys.government==='Democracy'||sys.government==='Corporate State'||sys.government==='Confederacy';
+  const dangerous = sys.government==='Anarchy'||sys.government==='Feudal'||
+    sys.economy==='Poor Industrial'||sys.economy==='Poor Agricultural';
+  if(dangerous) return DESC.grim;
+  if(wealthy && stable) return DESC.pleasant;
+  return DESC.neutral;
+}
+function craftPool(sys){
+  return (sys.government==='Anarchy'||sys.government==='Feudal') ? DESC.grimCrafts : DESC.products;
+}
+function inhabitants(name, rng){
+  const last=name[name.length-1].toLowerCase();
+  const isVowel='aeiou'.includes(last);
+  const sfx = isVowel?['ans','ites','ese','ari']:['ans','ites','ians','oids'];
+  return name + rng.pick(sfx);
+}
+function describeSystem(sys){
+  const r=makeDescRng(sys.seed);
+  const adj=r.pick(adjPool(sys));
+  const a=/^[aeiou]/i.test(adj)?'an':'a';
+  const t1=[
+    ()=>`${sys.name} is ${a} ${adj} world ${r.pick(DESC.famousFor)} its ${r.pick(DESC.features)}.`,
+    ()=>`${sys.name} is ${r.pick(DESC.famousFor)} its ${r.pick(DESC.features)} and its ${r.pick(DESC.cultural)}.`,
+    ()=>`${sys.name} is ${a} ${adj} place — ${r.pick(DESC.homeTo)} the galaxy's most ${r.pick(DESC.cQual)} ${r.pick(DESC.creatures)}.`,
+    ()=>`${sys.name} is ${r.pick(DESC.famousFor)} its ${r.pick(craftPool(sys))} and ${r.pick(craftPool(sys))}.`,
+  ];
+  let out=r.pick(t1)();
+  if(r.chance(0.66)){
+    const who=inhabitants(sys.name, r);
+    const t2w=[
+      [3,()=>`The ${who} are ${r.pick(DESC.famousFor)} their ${r.pick(craftPool(sys))}.`],
+      [2,()=>`Visitors are advised to beware of ${r.pick(DESC.hazards)}, but the ${who} are friendly enough.`],
+      [3,()=>`It is said that ${r.pick(DESC.absurd)}.`],
+      [2,()=>`The ${who} have a peculiar fondness for ${r.pick(DESC.creatures)}.`],
+      [1,()=>`The ${who} prefer not to discuss it.`],
+      [2,()=>`The ${who} are ${r.pick(DESC.famousFor)} their ${r.pick(DESC.cQual)} ${r.pick(DESC.creatures)}.`],
+    ];
+    const pool=[];
+    for(const[w,fn]of t2w) for(let i=0;i<w;i++) pool.push(fn);
+    out += ' '+r.pick(pool)();
+  }
+  return out;
+}
+function systemStatus(sys){
+  const danger = sys.government==='Anarchy'||sys.government==='Feudal';
+  const safe = sys.government==='Corporate State'||sys.government==='Democracy';
+  const rich = sys.economy.startsWith('Rich');
+  const poor = sys.economy.startsWith('Poor');
+  if(danger&&poor) return 'Hazardous';
+  if(danger) return 'Lawless';
+  if(safe&&rich) return 'Prosperous';
+  if(safe) return 'Stable';
+  if(poor) return 'Struggling';
+  if(rich) return 'Thriving';
+  return 'Settled';
+}
+
+/* ===== 4. Theme system ===== */
+function resolveColor(c){ return typeof c==='number' ? {h:c,s:90,l:60} : c; }
+const THEMES = [
+  { id:'cyan', name:'Cyan',
+    hues:{ hull:195, planet:195, dust:200, frame:195, dash:38, system:195, selected:38, grid:195, accent:195, warn:12 } },
+  { id:'phosphor', name:'Green Phosphor',
+    hues:{ hull:110, planet:110, dust:100, frame:110, dash:75, system:110, selected:75, grid:110, accent:110, warn:50 } },
+  { id:'amber', name:'Amber Monochrome',
+    hues:{ hull:38, planet:38, dust:45, frame:38, dash:30, system:38, selected:30, grid:38, accent:38, warn:12 } },
+  { id:'ember', name:'Cyan & Amber',
+    hues:{ hull:195, planet:28, dust:210, frame:195, dash:28, system:195, selected:28, grid:200, accent:28, warn:0 } },
+  { id:'plasma', name:'Magenta Synthwave',
+    hues:{ hull:290, planet:290, dust:270, frame:290, dash:320, system:290, selected:320, grid:280, accent:320, warn:60 } },
+  { id:'spectrum', name:'Full Color',
+    hues:{
+      hull:{h:210,s:25,l:75}, planet:{h:195,s:55,l:60}, dust:{h:210,s:15,l:88},
+      frame:{h:30,s:20,l:60}, dash:{h:130,s:75,l:60}, system:{h:50,s:25,l:85},
+      selected:{h:38,s:95,l:65}, grid:{h:210,s:30,l:50}, accent:{h:38,s:90,l:65},
+      warn:{h:0,s:95,l:60},
+    } },
+];
+const THEME_KEY = 'aphelion.theme';
+function loadSavedThemeId(){
+  try{ const v=localStorage.getItem(THEME_KEY); if(v && THEMES.some(t=>t.id===v)) return v; }catch{}
+  return THEMES[0].id;
+}
+function saveThemeId(id){ try{ localStorage.setItem(THEME_KEY, id); }catch{} }
+function getTheme(id){ return THEMES.find(t=>t.id===id) ?? THEMES[0]; }
+
+/* ===== 5. Ship sim ===== */
+const TUNING = { maxSpeed:80, throttleResponse:1.5, turnRate:1.2, rollRate:2.0, velocityAlignRate:4.0 };
+function stepShip(ship, c, dt){
+  const throttle = Math.max(0, Math.min(1, ship.throttle + c.throttleDelta*dt));
+  const pitchQ = qFromAxisAngle(V_RIGHT, c.pitch*TUNING.turnRate*dt);
+  const yawQ   = qFromAxisAngle(V_UP,    c.yaw  *TUNING.turnRate*dt);
+  const rollQ  = qFromAxisAngle(V_FORWARD, c.roll*TUNING.rollRate*dt);
+  let orientation = qNormalize(qMul(ship.orientation, qMul(yawQ, qMul(pitchQ, rollQ))));
+  const targetSpeed = throttle*TUNING.maxSpeed;
+  const speedAlpha = 1-Math.exp(-TUNING.throttleResponse*dt);
+  const speed = ship.speed + (targetSpeed - ship.speed)*speedAlpha;
+  const forward = qRotate(orientation, V_FORWARD);
+  const targetVel = vScale(forward, speed);
+  const a = 1-Math.exp(-TUNING.velocityAlignRate*dt);
+  const velocity=[
+    ship.velocity[0] + (targetVel[0]-ship.velocity[0])*a,
+    ship.velocity[1] + (targetVel[1]-ship.velocity[1])*a,
+    ship.velocity[2] + (targetVel[2]-ship.velocity[2])*a,
+  ];
+  const position = vAdd(ship.position, vScale(velocity, dt));
+  return { position, orientation, velocity, throttle, speed };
+}
+const INITIAL_SHIP = { position:V_ZERO, orientation:Q_IDENTITY, velocity:V_ZERO, throttle:0, speed:0 };
+
+/* ===== 6. Game state ===== */
+function reduce(state, action){
+  switch(action.type){
+    case 'select-system':
+      return { ...state, selectedSystemSeed: action.seed };
+    case 'begin-hyperspace':
+      if(!state.selectedSystemSeed) return state;
+      return { ...state, screen:'hyperspace', hyperspaceT:0 };
+    case 'arrive-in-system':
+      return {
+        ...state, screen:'flight',
+        currentSystemSeed: state.selectedSystemSeed,
+        selectedSystemSeed: null,
+        hyperspaceT: 1,
+        // Reset ship for arrival: stationary, facing forward.
+        ship: INITIAL_SHIP,
+      };
+    case 'open-chart':
+      return { ...state, screen:'chart' };
+    case 'set-galaxy':
+      return { ...state, galaxyIdx:action.galaxyIdx, selectedSystemSeed:null };
+  }
+  return state;
+}
+
+/* ===== 7. Input layer ===== */
+const FLIGHT_BINDS = {
+  pitchDown:['KeyW','ArrowUp'], pitchUp:['KeyS','ArrowDown'],
+  yawLeft:['KeyA'], yawRight:['KeyD'],
+  rollLeft:['KeyQ'], rollRight:['KeyE'],
+  throttleUp:['ShiftLeft','ShiftRight'], throttleDown:['ControlLeft','ControlRight'],
+};
+const heldKeys = new Set();
+addEventListener('keydown', (e)=>{
+  const t=e.target;
+  if(t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
+  heldKeys.add(e.code);
+  if(e.code.startsWith('Arrow')) e.preventDefault();
+});
+addEventListener('keyup', (e)=> heldKeys.delete(e.code));
+addEventListener('blur', ()=> heldKeys.clear());
+function anyHeld(axis){ for(const c of FLIGHT_BINDS[axis]) if(heldKeys.has(c)) return true; return false; }
+function sampleControls(){
+  return {
+    pitch: (anyHeld('pitchUp')?1:0) - (anyHeld('pitchDown')?1:0),
+    yaw:   (anyHeld('yawRight')?1:0) - (anyHeld('yawLeft')?1:0),
+    roll:  (anyHeld('rollRight')?1:0) - (anyHeld('rollLeft')?1:0),
+    throttleDelta: (anyHeld('throttleUp')?1:0) - (anyHeld('throttleDown')?1:0),
+  };
+}
+
+/* ===== 8. Render foundations ===== */
+const stage = document.getElementById('stage');
+const ctx = stage.getContext('2d', { alpha:false });
+const ramp = " .·:-=+*#%@█";
+
+function resize(){
+  const dpr=Math.min(window.devicePixelRatio||1, 2);
+  const w=Math.max(1, Math.floor(innerWidth*dpr));
+  const h=Math.max(1, Math.floor(innerHeight*dpr));
+  stage.width=w; stage.height=h;
+  stage.style.width=innerWidth+'px';
+  stage.style.height=innerHeight+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener('resize', resize);
+resize();
+
+const buckets = {};
+function getBucket(name){
+  const dpr=Math.min(window.devicePixelRatio||1, 2);
+  const w=Math.max(1, stage.width || Math.floor(innerWidth*dpr));
+  const h=Math.max(1, stage.height || Math.floor(innerHeight*dpr));
+  if(!buckets[name] || buckets[name].canvas.width!==w || buckets[name].canvas.height!==h){
+    const c=document.createElement('canvas');
+    c.width=w; c.height=h;
+    const cx=c.getContext('2d');
+    cx.setTransform(dpr,0,0,dpr,0,0);
+    buckets[name]={ canvas:c, ctx:cx };
+  }
+  return buckets[name];
+}
+
+/**
+ * Render the per-bucket intensity grids as glowing ASCII.
+ * `layers` is [{ name, grid, color }, ...] where color = {h,s,l}.
+ * Picks brightest per cell, draws to main canvas + bucket, then bloom.
+ */
+function renderLayers(layers, cell, cols, rows, W, H){
+  for(const L of layers){
+    const b=getBucket(L.name);
+    b.ctx.clearRect(0, 0, W, H);
+    b.ctx.font=`${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
+    b.ctx.textBaseline='middle';
+    b.ctx.textAlign='center';
+  }
+  ctx.font=`${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
+  ctx.textBaseline='middle';
+  ctx.textAlign='center';
+
+  for(let gy=0;gy<rows;gy++){
+    for(let gx=0;gx<cols;gx++){
+      const idx=gy*cols+gx;
+      let bestV=0, bestL=null;
+      for(const L of layers){
+        if(L.grid[idx] > bestV){ bestV=L.grid[idx]; bestL=L; }
+      }
+      if(bestV < 0.06) continue;
+      const ch = ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
+      const x=gx*cell+cell/2, y=gy*cell+cell/2;
+      const c=bestL.color;
+      const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
+      ctx.fillStyle = `hsl(${c.h}, ${c.s}%, ${light}%)`;
+      ctx.fillText(ch, x, y);
+      const b=getBucket(bestL.name);
+      b.ctx.fillStyle = `hsl(${c.h}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
+      b.ctx.fillText(ch, x, y);
+    }
+  }
+
+  // Bloom
+  ctx.globalCompositeOperation='lighter';
+  const passes=[ {blur:2,alpha:0.6}, {blur:6,alpha:0.5}, {blur:16,alpha:0.4}, {blur:36,alpha:0.25} ];
+  for(const L of layers){
+    const b=getBucket(L.name);
+    if(!b.canvas.width || !b.canvas.height) continue;
+    for(const p of passes){
+      ctx.filter=`blur(${p.blur}px)`;
+      ctx.globalAlpha=p.alpha*0.7;
+      ctx.drawImage(b.canvas, 0, 0, W, H);
+    }
+  }
+  ctx.filter='none';
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+}
+
+/* ===== 9. Planet renderer ===== */
+const planetCanvas = document.getElementById('planetCanvas');
+const planetCtx = planetCanvas.getContext('2d');
+function drawPlanet(sys, theme){
+  const w=planetCanvas.width, h=planetCanvas.height;
+  planetCtx.clearRect(0, 0, w, h);
+  const baseColor = resolveColor(theme.hues.planet);
+  const limbColor = resolveColor(theme.hues.dust);
+  const r = makeDescRng(sys.seed);
+  const cx=w/2, cy=h/2;
+  const radius = Math.min(w, h)*0.42;
+  const cell=6;
+  const cols=Math.ceil(w/cell), rows=Math.ceil(h/cell);
+  const grid = new Float32Array(cols*rows);
+
+  // Limb
+  for(let a=0;a<Math.PI*2;a+=0.04){
+    const px=cx+Math.cos(a)*radius, py=cy+Math.sin(a)*radius;
+    const gx=Math.round(px/cell), gy=Math.round(py/cell);
+    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const lightDot = -Math.cos(a)*0.7 - Math.sin(a)*0.7;
+    const v = 0.55 + lightDot*0.4;
+    grid[gy*cols+gx] = Math.max(grid[gy*cols+gx], v);
+  }
+  // Meridians
+  const arcCount = 1 + (r.next()%2);
+  for(let m=0;m<arcCount;m++){
+    const tilt=(r.next()%1000)/1000 * Math.PI;
+    const squish=0.2 + (r.next()%100)/100 * 0.7;
+    for(let a=0;a<Math.PI*2;a+=0.06){
+      const lx=Math.cos(a)*radius*0.95;
+      const ly=Math.sin(a)*radius*0.95*squish;
+      const rx=lx*Math.cos(tilt) - ly*Math.sin(tilt);
+      const ry=lx*Math.sin(tilt) + ly*Math.cos(tilt);
+      const px=cx+rx, py=cy+ry;
+      if(Math.hypot(px-cx, py-cy) > radius*0.95) continue;
+      const gx=Math.round(px/cell), gy=Math.round(py/cell);
+      if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+      const idx=gy*cols+gx;
+      if(0.45 > grid[idx]) grid[idx]=0.45;
+    }
+  }
+  // Speckles
+  const speckles = Math.min(40, Math.floor(sys.population*3 + 8));
+  for(let i=0;i<speckles;i++){
+    const a=(r.next()%10000)/10000 * Math.PI*2;
+    const dist=Math.sqrt((r.next()%10000)/10000) * radius*0.85;
+    const px=cx+Math.cos(a)*dist, py=cy+Math.sin(a)*dist;
+    const gx=Math.round(px/cell), gy=Math.round(py/cell);
+    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const idx=gy*cols+gx;
+    const v = 0.6 + (r.next()%100)/100 * 0.35;
+    if(v > grid[idx]) grid[idx]=v;
+  }
+
+  planetCtx.font=`${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
+  planetCtx.textBaseline='middle';
+  planetCtx.textAlign='center';
+  for(const pass of ['sharp','bloom']){
+    if(pass==='bloom'){
+      planetCtx.filter='blur(3px)';
+      planetCtx.globalCompositeOperation='lighter';
+      planetCtx.globalAlpha=0.55;
+    }
+    for(let gy=0;gy<rows;gy++){
+      for(let gx=0;gx<cols;gx++){
+        const v=grid[gy*cols+gx];
+        if(v < 0.1) continue;
+        const ch = ramp[Math.min(ramp.length-1, Math.floor(v*ramp.length))];
+        const x=gx*cell+cell/2, y=gy*cell+cell/2;
+        const distFromCenter = Math.hypot(x-cx, y-cy);
+        const isLimb = distFromCenter > radius*0.85;
+        const c = isLimb ? limbColor : baseColor;
+        const light = Math.max(20, Math.min(95, c.l - 15 + v*40));
+        planetCtx.fillStyle = `hsl(${c.h}, ${c.s}%, ${light}%)`;
+        planetCtx.fillText(ch, x, y);
+      }
+    }
+  }
+  planetCtx.filter='none';
+  planetCtx.globalCompositeOperation='source-over';
+  planetCtx.globalAlpha=1;
+}
+
+/* ===== 10. Chart screen ===== */
+const PANEL_HEIGHT=168, TITLE_HEIGHT=80;
+function chartBounds(){
+  const marginX=60;
+  return { x0:marginX, y0:TITLE_HEIGHT, x1:innerWidth-marginX, y1:innerHeight-(PANEL_HEIGHT+16) };
+}
+function chartToScreen(cx, cy){
+  const b=chartBounds();
+  return [ b.x0 + (cx/255)*(b.x1-b.x0), b.y0 + (cy/127)*(b.y1-b.y0) ];
+}
+function screenToChart(sx, sy){
+  const b=chartBounds();
+  return [
+    Math.max(0, Math.min(255, ((sx-b.x0)/(b.x1-b.x0))*255)),
+    Math.max(0, Math.min(127, ((sy-b.y0)/(b.y1-b.y0))*127)),
+  ];
+}
+function nearestSystem(galaxy, cx, cy){
+  let best=null, bestD=Infinity;
+  for(const s of galaxy.systems){
+    const dx=s.x-cx, dy=s.y-cy;
+    const d=dx*dx+dy*dy;
+    if(d<bestD){ bestD=d; best=s; }
+  }
+  return best;
+}
+
+const chartState = { cursorX:128, cursorY:64, lastPlanetSystem:null, t:0 };
+let chartHovered = null;
+
+function renderChart(state, theme, dt){
+  chartState.t += dt;
+  const W=innerWidth, H=innerHeight;
+  const cell=9;
+  const cols=Math.ceil(W/cell), rows=Math.ceil(H/cell);
+
+  ctx.fillStyle='rgba(2, 3, 10, 1)';
+  ctx.fillRect(0, 0, W, H);
+
+  const gSystem=new Float32Array(cols*rows);
+  const gSelected=new Float32Array(cols*rows);
+  const gCursor=new Float32Array(cols*rows);
+  const gGrid=new Float32Array(cols*rows);
+
+  // Background grid
+  const b=chartBounds();
+  for(let cx=0;cx<=255;cx+=32){
+    const[sx]=chartToScreen(cx, 0);
+    const gx=Math.round(sx/cell);
+    for(let gy=Math.floor(b.y0/cell); gy<Math.ceil(b.y1/cell); gy+=2){
+      if(gx>=0&&gx<cols&&gy>=0&&gy<rows) gGrid[gy*cols+gx]=0.18;
+    }
+  }
+  for(let cy=0;cy<=127;cy+=16){
+    const[,sy]=chartToScreen(0, cy);
+    const gy=Math.round(sy/cell);
+    for(let gx=Math.floor(b.x0/cell); gx<Math.ceil(b.x1/cell); gx+=2){
+      if(gx>=0&&gx<cols&&gy>=0&&gy<rows) gGrid[gy*cols+gx]=0.18;
+    }
+  }
+
+  const galaxy = state.galaxies[state.galaxyIdx];
+  const nearest = nearestSystem(galaxy, chartState.cursorX, chartState.cursorY);
+  chartHovered = nearest;
+
+  for(const sys of galaxy.systems){
+    const[sx, sy]=chartToScreen(sys.x, sys.y);
+    const gx=Math.round(sx/cell), gy=Math.round(sy/cell);
+    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const brightness = 0.45 + (sys.techLevel/15)*0.5;
+    const isSelected = sys===nearest;
+    const grid = isSelected ? gSelected : gSystem;
+    const idx=gy*cols+gx;
+    if(brightness > grid[idx]) grid[idx]=brightness;
+    if(isSelected){
+      for(const[ox,oy]of[[-1,0],[1,0],[0,-1],[0,1]]){
+        const x=gx+ox, y=gy+oy;
+        if(x<0||x>=cols||y<0||y>=rows) continue;
+        const v = 0.55 + 0.2*Math.sin(chartState.t*4);
+        if(v > gSelected[y*cols+x]) gSelected[y*cols+x]=v;
+      }
+    }
+  }
+
+  if(nearest){
+    const[sx, sy]=chartToScreen(nearest.x, nearest.y);
+    const gx=Math.round(sx/cell), gy=Math.round(sy/cell);
+    const armLen=4, gap=2;
+    const pulse = 0.7 + 0.3*Math.sin(chartState.t*6);
+    for(let i=gap; i<=gap+armLen; i++){
+      for(const[x,y]of[[gx-i,gy],[gx+i,gy],[gx,gy-i],[gx,gy+i]]){
+        if(x<0||x>=cols||y<0||y>=rows) continue;
+        const fade = 1 - ((i-gap)/armLen)*0.5;
+        const v = pulse * fade;
+        const idx=y*cols+x;
+        if(v > gCursor[idx]) gCursor[idx]=v;
+      }
+    }
+  }
+
+  const layers=[
+    { name:'grid',    grid:gGrid,     color:resolveColor(theme.hues.grid) },
+    { name:'system',  grid:gSystem,   color:resolveColor(theme.hues.system) },
+    { name:'selected',grid:gSelected, color:resolveColor(theme.hues.selected) },
+    { name:'cursor',  grid:gCursor,   color:resolveColor(theme.hues.selected) },
+  ];
+  renderLayers(layers, cell, cols, rows, W, H);
+
+  // Update info panel
+  if(nearest){
+    document.getElementById('sysName').textContent = nearest.name;
+    document.getElementById('sysCoords').textContent = `${nearest.x}, ${nearest.y}`;
+    document.getElementById('sysEcon').textContent = nearest.economy;
+    document.getElementById('sysGov').textContent = nearest.government;
+    const techEl=document.getElementById('sysTech');
+    techEl.textContent = nearest.techLevel.toString();
+    techEl.classList.toggle('warn', nearest.techLevel < 4);
+    document.getElementById('sysPop').textContent = `${nearest.population.toFixed(1)} B`;
+    document.getElementById('sysProd').textContent = nearest.productivity.toLocaleString();
+    document.getElementById('sysRad').textContent = `${nearest.radius.toLocaleString()} km`;
+    const peopleRng=makeDescRng(nearest.seed);
+    document.getElementById('sysPeople').textContent = inhabitants(nearest.name, peopleRng);
+    document.getElementById('sysStatus').textContent = systemStatus(nearest);
+    document.getElementById('sysDesc').textContent = describeSystem(nearest);
+    if(chartState.lastPlanetSystem !== nearest){
+      drawPlanet(nearest, theme);
+      chartState.lastPlanetSystem = nearest;
+    }
+  }
+
+  // Update jump button
+  const jumpBtn = document.getElementById('jump-btn');
+  if(nearest){
+    jumpBtn.textContent = `JUMP TO ${nearest.name}`;
+    jumpBtn.disabled = false;
+  } else {
+    jumpBtn.textContent = 'JUMP TO —';
+    jumpBtn.disabled = true;
+  }
+}
+
+/* ===== 11. Flight screen ===== */
+const stars = [];
+for(let i=0;i<320;i++){
+  const z=Math.random()*2-1;
+  const theta=Math.random()*Math.PI*2;
+  const r=Math.sqrt(1-z*z);
+  stars.push({ pos:[r*Math.cos(theta), r*Math.sin(theta), z], mag:Math.random()*0.6+0.3 });
+}
+const DUST_RANGE=60, DUST_COUNT=80;
+const dust=[];
+function recycleDust(d){
+  const r = DUST_RANGE * (0.5 + Math.random()*0.5);
+  const z = Math.random()*2-1;
+  const theta = Math.random()*Math.PI*2;
+  const xyR = Math.sqrt(1 - z*z);
+  d.pos = [ xyR*Math.cos(theta)*r, xyR*Math.sin(theta)*r, z*r ];
+}
+for(let i=0;i<DUST_COUNT;i++){ const d={pos:[0,0,0]}; recycleDust(d); dust.push(d); }
+
+const FOV_FLIGHT = 380;
+const FLIGHT_CELL = 8;
+
+function renderFlight(state, theme, dt){
+  const W=innerWidth, H=innerHeight;
+  const cols=Math.ceil(W/FLIGHT_CELL), rows=Math.ceil(H/FLIGHT_CELL);
+
+  ctx.fillStyle='rgba(2, 3, 10, 1)';
+  ctx.fillRect(0, 0, W, H);
+
+  const invOrient = qConjugate(state.ship.orientation);
+  const gStars = new Float32Array(cols*rows);
+  const gDust  = new Float32Array(cols*rows);
+  const gFrame = new Float32Array(cols*rows);
+
+  // Stars
+  for(const s of stars){
+    const cam = qRotate(invOrient, s.pos);
+    if(cam[2] < 0.05) continue;
+    const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
+    const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+    const gx = Math.round(px/FLIGHT_CELL), gy = Math.round(py/FLIGHT_CELL);
+    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const idx = gy*cols+gx;
+    if(s.mag > gStars[idx]) gStars[idx] = s.mag;
+  }
+
+  // Dust
+  for(const d of dust){
+    d.pos = [
+      d.pos[0] - state.ship.velocity[0]*dt,
+      d.pos[1] - state.ship.velocity[1]*dt,
+      d.pos[2] - state.ship.velocity[2]*dt,
+    ];
+    const distSq = d.pos[0]*d.pos[0] + d.pos[1]*d.pos[1] + d.pos[2]*d.pos[2];
+    if(distSq > DUST_RANGE*DUST_RANGE*1.4){ recycleDust(d); continue; }
+    const cam = qRotate(invOrient, d.pos);
+    if(cam[2] < 0.5) continue;
+    const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
+    const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+    const gx = Math.round(px/FLIGHT_CELL), gy = Math.round(py/FLIGHT_CELL);
+    if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+    const v = Math.max(0.2, Math.min(1, 1 - cam[2]/DUST_RANGE));
+    const idx = gy*cols+gx;
+    if(v > gDust[idx]) gDust[idx] = v;
+    // Streaks
+    if(state.ship.speed > 5){
+      const tf = Math.min(1, state.ship.speed/TUNING.maxSpeed);
+      const back = [
+        d.pos[0] + state.ship.velocity[0]*dt*4*tf,
+        d.pos[1] + state.ship.velocity[1]*dt*4*tf,
+        d.pos[2] + state.ship.velocity[2]*dt*4*tf,
+      ];
+      const camB = qRotate(invOrient, back);
+      if(camB[2] >= 0.5){
+        const pxB = (camB[0]*FOV_FLIGHT)/camB[2] + W/2;
+        const pyB = (-camB[1]*FOV_FLIGHT)/camB[2] + H/2;
+        const dx=pxB-px, dy=pyB-py;
+        const steps = Math.min(10, Math.ceil(Math.hypot(dx,dy)/FLIGHT_CELL));
+        for(let s=1;s<=steps;s++){
+          const t=s/steps;
+          const sx=Math.round((px+dx*t)/FLIGHT_CELL);
+          const sy=Math.round((py+dy*t)/FLIGHT_CELL);
+          if(sx<0||sx>=cols||sy<0||sy>=rows) continue;
+          const fade = v * (1 - t*0.7);
+          const idx2 = sy*cols+sx;
+          if(fade > gDust[idx2]) gDust[idx2] = fade;
+        }
+      }
+    }
+  }
+
+  // Cockpit frame + crosshair
+  const inset=14, slant=W*0.06, dashTop=H-80;
+  function plotLine(x1,y1,x2,y2,brightness){
+    const a=x1/FLIGHT_CELL, bb=y1/FLIGHT_CELL, c=x2/FLIGHT_CELL, dd=y2/FLIGHT_CELL;
+    const steps = Math.max(2, Math.ceil(Math.hypot(c-a, dd-bb)));
+    for(let i=0;i<=steps;i++){
+      const t=i/steps;
+      const gx=Math.round(a+(c-a)*t), gy=Math.round(bb+(dd-bb)*t);
+      if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+      const idx=gy*cols+gx;
+      if(brightness > gFrame[idx]) gFrame[idx]=brightness;
+    }
+  }
+  plotLine(inset, inset, W-inset, inset, 0.7);
+  plotLine(inset, inset, inset+slant, dashTop, 0.7);
+  plotLine(W-inset, inset, W-inset-slant, dashTop, 0.7);
+  plotLine(inset+slant, dashTop, W-inset-slant, dashTop, 0.85);
+
+  const ccx = (W/2)/FLIGHT_CELL, ccy = (H*0.42)/FLIGHT_CELL;
+  const arm=2.0, gap=0.6;
+  plotLine((ccx-arm-gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, (ccx-gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, 0.95);
+  plotLine((ccx+gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, (ccx+arm+gap)*FLIGHT_CELL, ccy*FLIGHT_CELL, 0.95);
+  plotLine(ccx*FLIGHT_CELL, (ccy-arm-gap)*FLIGHT_CELL, ccx*FLIGHT_CELL, (ccy-gap)*FLIGHT_CELL, 0.95);
+  plotLine(ccx*FLIGHT_CELL, (ccy+gap)*FLIGHT_CELL, ccx*FLIGHT_CELL, (ccy+arm+gap)*FLIGHT_CELL, 0.95);
+
+  const layers=[
+    { name:'stars', grid:gStars, color:resolveColor(theme.hues.system) },
+    { name:'dust',  grid:gDust,  color:resolveColor(theme.hues.dust) },
+    { name:'frame', grid:gFrame, color:resolveColor(theme.hues.frame) },
+  ];
+  renderLayers(layers, FLIGHT_CELL, cols, rows, W, H);
+
+  // HUD readouts
+  document.getElementById('hSpeed').textContent = state.ship.speed.toFixed(1);
+  document.getElementById('hThr').textContent = `${Math.round(state.ship.throttle*100)}%`;
+  const sysName = state.currentSystemSeed
+    ? (findSystemBySeed(state.galaxies, state.currentSystemSeed)?.name ?? '—')
+    : '—';
+  document.getElementById('hSystem').textContent = sysName;
+  const fwd = qRotate(state.ship.orientation, V_FORWARD);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, fwd[1])));
+  const yaw = Math.atan2(fwd[0], fwd[2]);
+  document.getElementById('hPitch').textContent = `${(pitch*180/Math.PI).toFixed(0)}°`;
+  document.getElementById('hYaw').textContent = `${(yaw*180/Math.PI).toFixed(0)}°`;
+}
+
+/* ===== 12. Hyperspace screen — placeholder for commit 2 ===== */
+function renderHyperspace(state, theme, dt){
+  // For now just show black; the tunnel effect comes in commit 2.
+  const W=innerWidth, H=innerHeight;
+  ctx.fillStyle='rgba(2, 3, 10, 1)';
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ===== 13. Theme picker UI ===== */
+function applyThemeToCss(theme){
+  const root = document.documentElement;
+  const a = resolveColor(theme.hues.accent);
+  const w = resolveColor(theme.hues.warn);
+  root.style.setProperty('--accent', `hsl(${a.h}, ${a.s}%, ${Math.min(95, a.l+10)}%)`);
+  root.style.setProperty('--ink', `hsl(${a.h}, ${Math.min(40, a.s)}%, 88%)`);
+  root.style.setProperty('--border', `hsla(${a.h}, ${Math.min(70, a.s)}%, 65%, 0.22)`);
+  root.style.setProperty('--muted', `hsl(${a.h}, 18%, 55%)`);
+  root.style.setProperty('--warn', `hsl(${w.h}, ${w.s}%, ${w.l+5}%)`);
+}
+const themePicker = document.getElementById('theme-picker');
+const themeButton = document.getElementById('theme-button');
+const themeMenu = document.getElementById('theme-menu');
+const themeCurrent = document.getElementById('theme-current');
+function renderThemeMenu(state){
+  themeMenu.innerHTML='';
+  for(const t of THEMES){
+    const item=document.createElement('div');
+    item.className='item' + (t.id===state.themeId ? ' on':'');
+    item.role='option';
+    const sw=document.createElement('span');
+    sw.className='swatch';
+    const sc=resolveColor(t.hues.accent);
+    sw.style.background=`hsl(${sc.h}, ${sc.s}%, ${sc.l}%)`;
+    const name=document.createElement('span');
+    name.className='name'; name.textContent=t.name;
+    const check=document.createElement('span');
+    check.className='check'; check.textContent='✓';
+    item.appendChild(sw); item.appendChild(name); item.appendChild(check);
+    item.addEventListener('click', ()=>{
+      state.themeId = t.id;
+      saveThemeId(t.id);
+      applyThemeToCss(getTheme(t.id));
+      chartState.lastPlanetSystem = null;
+      themeCurrent.textContent = t.name;
+      renderThemeMenu(state);
+      themePicker.classList.remove('open');
+    });
+    themeMenu.appendChild(item);
+  }
+}
+themeButton.addEventListener('click', (e)=>{
+  e.stopPropagation();
+  themePicker.classList.toggle('open');
+});
+addEventListener('click', (e)=>{
+  if(!themePicker.contains(e.target)) themePicker.classList.remove('open');
+});
+addEventListener('keydown', (e)=>{ if(e.key==='Escape') themePicker.classList.remove('open'); });
+
+/* ===== 14. Main loop + screen manager ===== */
+
+let game = {
+  screen: 'chart',
+  galaxies: generateAllGalaxies(),
+  galaxyIdx: 0,
+  currentSystemSeed: null,
+  selectedSystemSeed: null,
+  ship: INITIAL_SHIP,
+  hyperspaceT: 0,
+  themeId: loadSavedThemeId(),
+};
+
+function dispatch(action){
+  game = { ...game, ...reduce(game, action) };
+  document.body.dataset.screen = game.screen;
+  updateTitle();
+}
+function updateTitle(){
+  const sub = document.getElementById('title-sub');
+  if(game.screen === 'chart'){
+    const g = game.galaxies[game.galaxyIdx];
+    sub.textContent = `GALACTIC CHART · ${g.name.toUpperCase()} · GALAXY ${game.galaxyIdx+1} OF 8`;
+  } else if(game.screen === 'hyperspace'){
+    sub.textContent = 'HYPERSPACE';
+  } else {
+    const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
+    sub.textContent = sys ? `${sys.name.toUpperCase()} SYSTEM` : 'DEEP SPACE';
+  }
+}
+
+// Initialize theme + galaxy tabs
+applyThemeToCss(getTheme(game.themeId));
+themeCurrent.textContent = getTheme(game.themeId).name;
+renderThemeMenu(game);
+
+const tabs = document.getElementById('galaxy-tabs');
+for(let i=0;i<8;i++){
+  const b = document.createElement('button');
+  b.textContent = (i+1).toString();
+  b.title = game.galaxies[i].name;
+  if(i===0) b.classList.add('on');
+  b.addEventListener('click', ()=>{
+    dispatch({ type:'set-galaxy', galaxyIdx:i });
+    document.querySelectorAll('#galaxy-tabs button').forEach((b2,j)=>{
+      b2.classList.toggle('on', j===i);
+    });
+  });
+  tabs.appendChild(b);
+}
+
+// Chart-screen input: mouse moves cursor, arrows nudge it
+addEventListener('mousemove', (e)=>{
+  if(game.screen !== 'chart') return;
+  const[cx,cy]=screenToChart(e.clientX, e.clientY);
+  chartState.cursorX = cx; chartState.cursorY = cy;
+});
+addEventListener('keydown', (e)=>{
+  if(game.screen === 'chart'){
+    const step = 4;
+    if(e.key==='ArrowLeft')  chartState.cursorX = Math.max(0, chartState.cursorX-step);
+    if(e.key==='ArrowRight') chartState.cursorX = Math.min(255, chartState.cursorX+step);
+    if(e.key==='ArrowUp')    chartState.cursorY = Math.max(0, chartState.cursorY-step);
+    if(e.key==='ArrowDown')  chartState.cursorY = Math.min(127, chartState.cursorY+step);
+    if(e.key>='1'&&e.key<='8'){
+      const idx=parseInt(e.key, 10)-1;
+      dispatch({ type:'set-galaxy', galaxyIdx:idx });
+      document.querySelectorAll('#galaxy-tabs button').forEach((b,j)=>{
+        b.classList.toggle('on', j===idx);
+      });
+    }
+    if(e.key==='Enter' && chartHovered){
+      dispatch({ type:'select-system', seed:chartHovered.seed });
+      dispatch({ type:'begin-hyperspace' });
+    }
+  }
+});
+
+// Jump button click
+document.getElementById('jump-btn').addEventListener('click', ()=>{
+  if(chartHovered){
+    dispatch({ type:'select-system', seed:chartHovered.seed });
+    dispatch({ type:'begin-hyperspace' });
+  }
+});
+
+// Open chart from flight
+document.getElementById('open-chart-btn').addEventListener('click', ()=>{
+  dispatch({ type:'open-chart' });
+});
+
+// Main loop
+let lastFrame = performance.now();
+const HYPERSPACE_DURATION = 2.5;  // seconds
+
+function frame(now){
+  const dt = Math.min(0.05, (now - lastFrame)/1000);
+  lastFrame = now;
+
+  // Per-screen simulation tick
+  if(game.screen === 'flight'){
+    const controls = sampleControls();
+    game = { ...game, ship: stepShip(game.ship, controls, dt) };
+  } else if(game.screen === 'hyperspace'){
+    const newT = Math.min(1, game.hyperspaceT + dt/HYPERSPACE_DURATION);
+    game = { ...game, hyperspaceT: newT };
+    if(newT >= 1) dispatch({ type:'arrive-in-system' });
+  }
+
+  // Render whichever screen is active
+  const theme = getTheme(game.themeId);
+  if(game.screen === 'chart')      renderChart(game, theme, dt);
+  else if(game.screen === 'flight') renderFlight(game, theme, dt);
+  else if(game.screen === 'hyperspace') renderHyperspace(game, theme, dt);
+
+  requestAnimationFrame(frame);
+}
+updateTitle();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
