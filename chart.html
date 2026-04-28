@@ -68,6 +68,12 @@
     width: 280px;
     font-size: 11px;
     line-height: 1.5;
+    /* Lock the panel to a fixed height so it doesn't reflow as the
+       cursor moves across systems with longer/shorter descriptions. */
+    height: 270px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
   #info h2 {
     margin: 0 0 4px;
@@ -90,6 +96,11 @@
     line-height: 1.55;
     font-style: italic;
     opacity: 0.92;
+    /* Reserve a fixed slot for the description; clip overflow so longer
+       texts don't push the panel taller. The longest descriptions in
+       practice are ~220 chars; this fits roughly five lines.            */
+    flex: 1;
+    overflow: hidden;
   }
 
   #legend {
@@ -573,14 +584,23 @@ function applyThemeToCss(theme) {
 applyThemeToCss(getTheme(state.themeId));
 
 /* ---- coordinate mapping: chart space -> screen space ----
-   The chart fills the screen but with margins for title and info panel. */
+   The chart's drawable region is the window minus the title at top, the
+   panels at bottom-left, and the legend at bottom-right. We cut a stepped
+   rectangle out of the bottom by simply shrinking marginBottom to the
+   panel's height plus a little breathing room. Systems redistribute
+   across the smaller area; nothing is hidden under panels.
+
+   Sizes here mirror the CSS — keep them in sync if the panels change.   */
+const PANEL_HEIGHT = 270;     // #info height
+const PANEL_BOTTOM = 16;      // #info bottom offset
+const TITLE_HEIGHT = 80;      // top margin (title + galaxy tabs)
 function chartBounds() {
-  const marginTop = 80;
-  const marginBottom = 80;
   const marginX = 80;
+  // Leave room for the panel + legend at the bottom of the screen.
+  const marginBottom = PANEL_HEIGHT + PANEL_BOTTOM + 16;
   return {
     x0: marginX,
-    y0: marginTop,
+    y0: TITLE_HEIGHT,
     x1: innerWidth - marginX,
     y1: innerHeight - marginBottom,
   };
