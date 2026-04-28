@@ -303,6 +303,68 @@
     transform: none;
   }
 
+  /* ============== Jump countdown overlay ============== */
+  #countdown {
+    position: fixed;
+    inset: 0;
+    z-index: 8;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: radial-gradient(ellipse at center, rgba(2,3,10,0.55) 0%, rgba(2,3,10,0.92) 80%);
+    pointer-events: none;
+    /* Fade in/out — toggled by JS via removing/adding the [hidden] attr. */
+    animation: countdown-fade 0.18s ease-out;
+  }
+  #countdown[hidden] { display: none; }
+  @keyframes countdown-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  #countdown .countdown-label {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.4em;
+    text-transform: uppercase;
+  }
+  #countdown .countdown-target {
+    color: var(--accent);
+    font-size: 36px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    text-shadow: 0 0 18px var(--accent);
+  }
+  #countdown .countdown-number {
+    color: var(--accent);
+    font-size: 96px;
+    font-weight: 700;
+    line-height: 1;
+    margin-top: 14px;
+    text-shadow: 0 0 28px var(--accent);
+    /* Pulse on each second tick. The animation is restarted by JS each
+       time the number changes, by toggling a class. */
+    transform-origin: center;
+  }
+  #countdown .countdown-number.tick {
+    animation: countdown-tick 1s ease-out;
+  }
+  @keyframes countdown-tick {
+    0%   { transform: scale(1.4); opacity: 1; }
+    20%  { transform: scale(1.0); opacity: 1; }
+    100% { transform: scale(1.0); opacity: 0.55; }
+  }
+  #countdown .countdown-cancel {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    margin-top: 18px;
+  }
+  #countdown .countdown-cancel strong { color: var(--accent); font-weight: 600; }
+
   /* ============== Flight HUD ============== */
   #hud-bl, #hud-br {
     position: fixed;
@@ -421,7 +483,15 @@
   </div>
 
   <!-- Hyperspace jump button (chart screen only) -->
-  <button id="jump-btn" class="show-chart" type="button" disabled>JUMP TO —</button>
+  <button id="jump-btn" class="show-chart" type="button" disabled>JUMP</button>
+
+  <!-- Jump countdown overlay (chart screen only, only visible during countdown) -->
+  <div id="countdown" class="show-chart" hidden>
+    <div class="countdown-label">JUMPING TO</div>
+    <div class="countdown-target" id="countdown-target">—</div>
+    <div class="countdown-number" id="countdown-number">3</div>
+    <div class="countdown-cancel">Press <strong>ESC</strong> to cancel</div>
+  </div>
 
   <!-- Flight HUD (flight screen only) -->
   <div id="hud-bl" class="show-flight">
@@ -967,6 +1037,8 @@ function nearestSystem(galaxy, cx, cy){
 
 const chartState = { cursorX:128, cursorY:64, lastPlanetSystem:null, t:0 };
 let chartHovered = null;
+let chartLocked = null;       // the system selected as the jump target
+let countdown = null;         // null when no countdown active; otherwise { remaining: seconds, target: system }
 
 function renderChart(state, theme, dt){
   chartState.t += dt;
@@ -978,7 +1050,8 @@ function renderChart(state, theme, dt){
   ctx.fillRect(0, 0, W, H);
 
   const gSystem=new Float32Array(cols*rows);
-  const gSelected=new Float32Array(cols*rows);
+  const gHovered=new Float32Array(cols*rows);  // dim highlight under cursor
+  const gLocked=new Float32Array(cols*rows);   // bright pulsing lock
   const gCursor=new Float32Array(cols*rows);
   const gGrid=new Float32Array(cols*rows);
 
@@ -1008,25 +1081,48 @@ function renderChart(state, theme, dt){
     const gx=Math.round(sx/cell), gy=Math.round(sy/cell);
     if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
     const brightness = 0.45 + (sys.techLevel/15)*0.5;
-    const isSelected = sys===nearest;
-    const grid = isSelected ? gSelected : gSystem;
+    const isLocked = sys === chartLocked;
+    const isHovered = sys === nearest && !isLocked;
+    let grid;
+    if(isLocked) grid = gLocked;
+    else if(isHovered) grid = gHovered;
+    else grid = gSystem;
     const idx=gy*cols+gx;
     if(brightness > grid[idx]) grid[idx]=brightness;
-    if(isSelected){
+
+    // Locked target: bright pulsing halo of nearby cells, larger and
+    // brighter than the hover halo. This is what makes it visually
+    // unmistakable that the target is committed.
+    if(isLocked){
+      const pulse = 0.7 + 0.3*Math.sin(chartState.t*5);
+      // 8-cell ring around the locked system
+      for(const[ox,oy]of[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]){
+        const x=gx+ox, y=gy+oy;
+        if(x<0||x>=cols||y<0||y>=rows) continue;
+        const v = pulse * 0.85;
+        if(v > gLocked[y*cols+x]) gLocked[y*cols+x] = v;
+      }
+    } else if(isHovered){
+      // Subtle hover halo — 4-cell cross only, dimmer than locked.
       for(const[ox,oy]of[[-1,0],[1,0],[0,-1],[0,1]]){
         const x=gx+ox, y=gy+oy;
         if(x<0||x>=cols||y<0||y>=rows) continue;
-        const v = 0.55 + 0.2*Math.sin(chartState.t*4);
-        if(v > gSelected[y*cols+x]) gSelected[y*cols+x]=v;
+        const v = 0.45 + 0.15*Math.sin(chartState.t*4);
+        if(v > gHovered[y*cols+x]) gHovered[y*cols+x] = v;
       }
     }
   }
 
-  if(nearest){
-    const[sx, sy]=chartToScreen(nearest.x, nearest.y);
+  // Crosshair on the locked system (if any), else on hovered
+  const focusSystem = chartLocked || nearest;
+  if(focusSystem){
+    const[sx, sy]=chartToScreen(focusSystem.x, focusSystem.y);
     const gx=Math.round(sx/cell), gy=Math.round(sy/cell);
-    const armLen=4, gap=2;
-    const pulse = 0.7 + 0.3*Math.sin(chartState.t*6);
+    const armLen = chartLocked ? 6 : 4;     // longer arms when locked
+    const gap = 2;
+    const pulse = chartLocked
+      ? 0.85 + 0.15*Math.sin(chartState.t*5)
+      : 0.7 + 0.3*Math.sin(chartState.t*6);
     for(let i=gap; i<=gap+armLen; i++){
       for(const[x,y]of[[gx-i,gy],[gx+i,gy],[gx,gy-i],[gx,gy+i]]){
         if(x<0||x>=cols||y<0||y>=rows) continue;
@@ -1041,42 +1137,39 @@ function renderChart(state, theme, dt){
   const layers=[
     { name:'grid',    grid:gGrid,     color:resolveColor(theme.hues.grid) },
     { name:'system',  grid:gSystem,   color:resolveColor(theme.hues.system) },
-    { name:'selected',grid:gSelected, color:resolveColor(theme.hues.selected) },
+    { name:'hovered', grid:gHovered,  color:resolveColor(theme.hues.system) },
+    { name:'locked',  grid:gLocked,   color:resolveColor(theme.hues.selected) },
     { name:'cursor',  grid:gCursor,   color:resolveColor(theme.hues.selected) },
   ];
   renderLayers(layers, cell, cols, rows, W, H);
 
-  // Update info panel
-  if(nearest){
-    document.getElementById('sysName').textContent = nearest.name;
-    document.getElementById('sysCoords').textContent = `${nearest.x}, ${nearest.y}`;
-    document.getElementById('sysEcon').textContent = nearest.economy;
-    document.getElementById('sysGov').textContent = nearest.government;
+  // Update info panel — follows hover, not lock, so the player can browse
+  // around the chart even after committing to a destination.
+  const panelTarget = nearest;
+  if(panelTarget){
+    document.getElementById('sysName').textContent = panelTarget.name;
+    document.getElementById('sysCoords').textContent = `${panelTarget.x}, ${panelTarget.y}`;
+    document.getElementById('sysEcon').textContent = panelTarget.economy;
+    document.getElementById('sysGov').textContent = panelTarget.government;
     const techEl=document.getElementById('sysTech');
-    techEl.textContent = nearest.techLevel.toString();
-    techEl.classList.toggle('warn', nearest.techLevel < 4);
-    document.getElementById('sysPop').textContent = `${nearest.population.toFixed(1)} B`;
-    document.getElementById('sysProd').textContent = nearest.productivity.toLocaleString();
-    document.getElementById('sysRad').textContent = `${nearest.radius.toLocaleString()} km`;
-    const peopleRng=makeDescRng(nearest.seed);
-    document.getElementById('sysPeople').textContent = inhabitants(nearest.name, peopleRng);
-    document.getElementById('sysStatus').textContent = systemStatus(nearest);
-    document.getElementById('sysDesc').textContent = describeSystem(nearest);
-    if(chartState.lastPlanetSystem !== nearest){
-      drawPlanet(nearest, theme);
-      chartState.lastPlanetSystem = nearest;
+    techEl.textContent = panelTarget.techLevel.toString();
+    techEl.classList.toggle('warn', panelTarget.techLevel < 4);
+    document.getElementById('sysPop').textContent = `${panelTarget.population.toFixed(1)} B`;
+    document.getElementById('sysProd').textContent = panelTarget.productivity.toLocaleString();
+    document.getElementById('sysRad').textContent = `${panelTarget.radius.toLocaleString()} km`;
+    const peopleRng=makeDescRng(panelTarget.seed);
+    document.getElementById('sysPeople').textContent = inhabitants(panelTarget.name, peopleRng);
+    document.getElementById('sysStatus').textContent = systemStatus(panelTarget);
+    document.getElementById('sysDesc').textContent = describeSystem(panelTarget);
+    if(chartState.lastPlanetSystem !== panelTarget){
+      drawPlanet(panelTarget, theme);
+      chartState.lastPlanetSystem = panelTarget;
     }
   }
 
-  // Update jump button
+  // Update jump button: enabled only when something is locked.
   const jumpBtn = document.getElementById('jump-btn');
-  if(nearest){
-    jumpBtn.textContent = `JUMP TO ${nearest.name}`;
-    jumpBtn.disabled = false;
-  } else {
-    jumpBtn.textContent = 'JUMP TO —';
-    jumpBtn.disabled = true;
-  }
+  jumpBtn.disabled = !chartLocked || !!countdown;
 }
 
 /* ===== 11. Flight screen ===== */
@@ -1605,6 +1698,8 @@ for(let i=0;i<8;i++){
   b.title = game.galaxies[i].name;
   if(i===0) b.classList.add('on');
   b.addEventListener('click', ()=>{
+    chartLocked = null;
+    cancelCountdown();
     dispatch({ type:'set-galaxy', galaxyIdx:i });
     document.querySelectorAll('#galaxy-tabs button').forEach((b2,j)=>{
       b2.classList.toggle('on', j===i);
@@ -1618,6 +1713,11 @@ addEventListener('mousemove', (e)=>{
   if(game.screen !== 'chart') return;
   const[cx,cy]=screenToChart(e.clientX, e.clientY);
   chartState.cursorX = cx; chartState.cursorY = cy;
+  // Cursor affordance: pointer when over a clickable system, crosshair otherwise.
+  const galaxy = game.galaxies[game.galaxyIdx];
+  const sys = nearestSystem(galaxy, cx, cy);
+  const closeEnough = sys && Math.hypot(sys.x - cx, sys.y - cy) <= 6;
+  stage.style.cursor = closeEnough ? 'pointer' : 'crosshair';
 });
 addEventListener('keydown', (e)=>{
   if(game.screen === 'chart'){
@@ -1628,24 +1728,103 @@ addEventListener('keydown', (e)=>{
     if(e.key==='ArrowDown')  chartState.cursorY = Math.min(127, chartState.cursorY+step);
     if(e.key>='1'&&e.key<='8'){
       const idx=parseInt(e.key, 10)-1;
+      chartLocked = null;
+      cancelCountdown();
       dispatch({ type:'set-galaxy', galaxyIdx:idx });
       document.querySelectorAll('#galaxy-tabs button').forEach((b,j)=>{
         b.classList.toggle('on', j===idx);
       });
     }
-    if(e.key==='Enter' && chartHovered){
-      dispatch({ type:'select-system', seed:chartHovered.seed });
-      dispatch({ type:'begin-hyperspace' });
+    if(e.key==='Enter' && chartLocked){
+      // Enter triggers the countdown when something is locked.
+      startCountdown();
+    } else if(e.key==='Enter' && chartHovered && !chartLocked){
+      // Convenience: if nothing's locked yet, Enter locks the hovered
+      // system. A second Enter then starts the countdown.
+      chartLocked = chartHovered;
+    }
+    if(e.key==='Escape'){
+      if(countdown){
+        cancelCountdown();
+      } else if(chartLocked){
+        chartLocked = null;
+      }
     }
   }
 });
 
-// Jump button click
-document.getElementById('jump-btn').addEventListener('click', ()=>{
-  if(chartHovered){
-    dispatch({ type:'select-system', seed:chartHovered.seed });
-    dispatch({ type:'begin-hyperspace' });
+/* ---- click-to-lock ---- */
+// Clicking on or near a system locks it as the jump target. Clicking
+// the same locked system again unlocks it. Clicking far from any system
+// is ignored (so users don't accidentally deselect by clicking dead space).
+addEventListener('mousedown', (e)=>{
+  if(game.screen !== 'chart') return;
+  if(countdown) return;
+  // Ignore clicks on the panel/controls — only canvas-area clicks lock.
+  const t = e.target;
+  if(t && t !== stage && t.id !== 'stage') return;
+
+  const galaxy = game.galaxies[game.galaxyIdx];
+  const[cx, cy] = screenToChart(e.clientX, e.clientY);
+  const sys = nearestSystem(galaxy, cx, cy);
+  if(!sys) return;
+  // Distance check: only register the click if we're reasonably close to
+  // a system in chart coordinates. ~6 chart units is roughly 30-50 px.
+  const dx = sys.x - cx, dy = sys.y - cy;
+  if(Math.hypot(dx, dy) > 6) return;
+
+  // Toggle: clicking the locked system unlocks; otherwise lock the new one.
+  chartLocked = (chartLocked === sys) ? null : sys;
+});
+
+/* ---- countdown ---- */
+const COUNTDOWN_SECONDS = 3;
+const countdownEl = document.getElementById('countdown');
+const countdownTargetEl = document.getElementById('countdown-target');
+const countdownNumberEl = document.getElementById('countdown-number');
+
+function startCountdown(){
+  if(!chartLocked || countdown) return;
+  countdown = { remaining: COUNTDOWN_SECONDS, target: chartLocked, lastShown: -1 };
+  countdownTargetEl.textContent = chartLocked.name;
+  countdownEl.hidden = false;
+  // Force a tick render immediately so the user sees "3" right away.
+  tickCountdown(0);
+}
+function cancelCountdown(){
+  countdown = null;
+  countdownEl.hidden = true;
+  countdownNumberEl.classList.remove('tick');
+}
+function tickCountdown(dt){
+  if(!countdown) return;
+  countdown.remaining -= dt;
+  // Show the ceiling of remaining time as the displayed number — so "2.7s
+  // remaining" shows as "3", flipping to "2" when remaining drops to 2.0.
+  // When remaining drops below 0 we trigger the actual jump.
+  if(countdown.remaining <= 0){
+    const target = countdown.target;
+    cancelCountdown();
+    dispatch({ type: 'select-system', seed: target.seed });
+    dispatch({ type: 'begin-hyperspace' });
+    chartLocked = null;
+    return;
   }
+  const shown = Math.ceil(countdown.remaining);
+  if(shown !== countdown.lastShown){
+    countdown.lastShown = shown;
+    countdownNumberEl.textContent = String(shown);
+    // Restart the tick animation by toggling the class. Forcing a reflow
+    // between off and on is what makes the keyframe replay.
+    countdownNumberEl.classList.remove('tick');
+    void countdownNumberEl.offsetWidth;
+    countdownNumberEl.classList.add('tick');
+  }
+}
+
+// Jump button click: starts the countdown rather than jumping directly.
+document.getElementById('jump-btn').addEventListener('click', ()=>{
+  if(chartLocked && !countdown) startCountdown();
 });
 
 // Open chart from flight
@@ -1669,6 +1848,11 @@ function frame(now){
     const newT = Math.min(1, game.hyperspaceT + dt/HYPERSPACE_DURATION);
     game = { ...game, hyperspaceT: newT };
     if(newT >= 1) dispatch({ type:'arrive-in-system' });
+  } else if(game.screen === 'chart'){
+    // Advance the jump countdown if one is running. The countdown lives
+    // in module-scope state, not game state, because it's a transient UI
+    // affordance that doesn't need to persist across screens.
+    if(countdown) tickCountdown(dt);
   }
 
   // Render whichever screen is active
