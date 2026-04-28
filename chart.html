@@ -60,90 +60,130 @@
     bottom: 0; left: 0; right: 0;
     z-index: 6;
     background: var(--panel);
-    backdrop-filter: blur(10px) saturate(140%);
-    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
     border-top: 1px solid var(--border);
-    padding: 14px 24px 16px;
+    padding: 14px 24px 18px;
     font-size: 11px;
     line-height: 1.5;
-    /* Lock the panel to a fixed height so it doesn't reflow as the
-       cursor moves across systems with longer/shorter descriptions. */
-    height: 130px;
+    /* Fixed height — never reflows. */
+    height: 168px;
     box-sizing: border-box;
+    /* Two rows: stats above, description below.
+       The stats row is a CSS grid with fixed-width cells so longer values
+       wrap inside their cell instead of pushing siblings around.        */
     display: grid;
-    /* Three columns: name/coords | properties | description.
-       The description column expands to fill all leftover space.       */
-    grid-template-columns: 220px 1fr 2.2fr;
-    gap: 28px;
+    grid-template-rows: 1fr auto;
+    gap: 10px;
+  }
+  /* The stats row: hero (planet + name) + 4 fixed-width data cells. */
+  #info .stats-row {
+    display: grid;
+    grid-template-columns: 320px repeat(4, minmax(140px, 1fr));
+    gap: 24px;
     align-items: stretch;
+    min-height: 0;
   }
-  #info .col {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;             /* allows the description column to shrink */
+  /* Hero cell: planet on the left, name + coordinates on the right. */
+  #info .hero {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 14px;
+    align-items: center;
+    border-right: 1px solid var(--border);
+    padding-right: 20px;
+    min-width: 0;
   }
+  #info .planet {
+    width: 72px; height: 72px;
+    position: relative;
+  }
+  #info .planet canvas {
+    width: 100%; height: 100%;
+    display: block;
+  }
+  #info .hero-text { min-width: 0; }
   #info h2 {
     margin: 0 0 6px;
     color: var(--accent);
-    font-size: 18px;
-    letter-spacing: 0.15em;
+    font-size: 22px;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    text-shadow: 0 0 6px var(--accent);
+    text-shadow: 0 0 8px var(--accent);
+    /* Long names truncate with ellipsis instead of pushing the layout. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  #info .col-coords .lbl {
+  #info .hero-text .lbl {
     color: var(--muted);
     font-size: 9px;
-    letter-spacing: 0.18em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
+    display: block;
+    margin-bottom: 1px;
   }
-  #info .col-coords .v {
+  #info .hero-text .v {
     color: var(--ink);
     font-variant-numeric: tabular-nums;
     font-size: 13px;
+    letter-spacing: 0.06em;
   }
-  /* Two rows × two columns of property pairs in the middle column —
-     compact enough to fit four key stats without scrolling.           */
-  #info .col-stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    grid-auto-rows: min-content;
-    gap: 4px 18px;
-    align-content: center;
+  /* Each data cell: label on top, two stat rows below. We pair stats
+     into the same cell (Economy + Government, Tech + Population, etc.)
+     so we get four cells of similar visual weight, and the long values
+     wrap within their cell rather than displacing anything.            */
+  #info .cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
   }
-  #info .col-stats .row {
-    display: flex; flex-direction: column;
+  #info .cell .pair {
+    display: flex;
+    flex-direction: column;
     gap: 1px;
+    min-width: 0;
   }
-  #info .col-stats .lbl {
+  #info .cell .lbl {
     color: var(--muted);
     font-size: 9px;
-    letter-spacing: 0.16em;
+    letter-spacing: 0.2em;
     text-transform: uppercase;
   }
-  #info .col-stats .v {
+  #info .cell .v {
     color: var(--ink);
-    font-variant-numeric: tabular-nums;
     font-size: 12px;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+    /* Allow wrapping for long values like "Mainly Agricultural", clamp
+       at two lines so we can never push the cell taller than its slot. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
-  #info .col-stats .v.warn { color: var(--warn); }
+  #info .cell .v.warn { color: var(--warn); }
+  /* Description row: full-width, italic, with a subtle leading mark. */
   #info .description {
     color: var(--ink);
     font-size: 12px;
-    line-height: 1.6;
+    line-height: 1.55;
     font-style: italic;
     opacity: 0.92;
-    /* Soft fade at the bottom edge if a description happens to overflow,
-       rather than hard-clipping mid-sentence.                            */
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+    /* Soft fade on overflow rather than hard clipping mid-sentence. */
     overflow: hidden;
-    mask-image: linear-gradient(180deg, black 80%, transparent 100%);
-    -webkit-mask-image: linear-gradient(180deg, black 80%, transparent 100%);
+    mask-image: linear-gradient(180deg, black 78%, transparent 100%);
+    -webkit-mask-image: linear-gradient(180deg, black 78%, transparent 100%);
   }
 
   #legend {
     position: fixed;
     /* Sits just above the bottom info strip. */
-    bottom: 142px; right: 16px;
+    bottom: 180px; right: 16px;
     z-index: 6;
     color: var(--muted);
     font-size: 9px;
@@ -279,20 +319,57 @@
   <div id="galaxy-tabs"></div>
 
   <div id="info">
-    <div class="col col-coords">
-      <h2 id="sysName">—</h2>
-      <span class="lbl">Coordinates</span>
-      <span class="v" id="sysCoords">—</span>
+    <div class="stats-row">
+      <div class="hero">
+        <div class="planet"><canvas id="planetCanvas" width="144" height="144"></canvas></div>
+        <div class="hero-text">
+          <h2 id="sysName">—</h2>
+          <span class="lbl">Coordinates</span>
+          <span class="v" id="sysCoords">—</span>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="pair">
+          <span class="lbl">Economy</span>
+          <span class="v" id="sysEcon">—</span>
+        </div>
+        <div class="pair">
+          <span class="lbl">Government</span>
+          <span class="v" id="sysGov">—</span>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="pair">
+          <span class="lbl">Tech Level</span>
+          <span class="v" id="sysTech">—</span>
+        </div>
+        <div class="pair">
+          <span class="lbl">Population</span>
+          <span class="v" id="sysPop">—</span>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="pair">
+          <span class="lbl">Productivity</span>
+          <span class="v" id="sysProd">—</span>
+        </div>
+        <div class="pair">
+          <span class="lbl">Radius</span>
+          <span class="v" id="sysRad">—</span>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="pair">
+          <span class="lbl">Inhabitants</span>
+          <span class="v" id="sysPeople">—</span>
+        </div>
+        <div class="pair">
+          <span class="lbl">Status</span>
+          <span class="v" id="sysStatus">—</span>
+        </div>
+      </div>
     </div>
-    <div class="col col-stats">
-      <div class="row"><span class="lbl">Economy</span><span class="v" id="sysEcon">—</span></div>
-      <div class="row"><span class="lbl">Government</span><span class="v" id="sysGov">—</span></div>
-      <div class="row"><span class="lbl">Tech Level</span><span class="v" id="sysTech">—</span></div>
-      <div class="row"><span class="lbl">Population</span><span class="v" id="sysPop">—</span></div>
-      <div class="row"><span class="lbl">Productivity</span><span class="v" id="sysProd">—</span></div>
-      <div class="row"><span class="lbl">Radius</span><span class="v" id="sysRad">—</span></div>
-    </div>
-    <div class="col description" id="sysDesc">—</div>
+    <div class="description" id="sysDesc">—</div>
   </div>
 
   <div id="legend">MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY</div>
@@ -575,6 +652,152 @@ function describeSystem(sys) {
   return out;
 }
 
+/* ---- short status string derived from system properties ----
+   Compresses economy + government into a short evocative phrase that
+   fits in a single cell without wrapping. Designed to feel like a
+   ship's-log shorthand: "Lawless", "Prosperous", "Stable Trade".     */
+function systemStatus(sys) {
+  const danger = sys.government === 'Anarchy' || sys.government === 'Feudal';
+  const safe = sys.government === 'Corporate State' || sys.government === 'Democracy';
+  const rich = sys.economy.startsWith('Rich');
+  const poor = sys.economy.startsWith('Poor');
+  if (danger && poor) return 'Hazardous';
+  if (danger) return 'Lawless';
+  if (safe && rich) return 'Prosperous';
+  if (safe) return 'Stable';
+  if (poor) return 'Struggling';
+  if (rich) return 'Thriving';
+  return 'Settled';
+}
+
+/* ---- procedural planet renderer ----
+   Each system gets a small disc drawn into the hero canvas, with surface
+   patterns derived from the seed so every planet looks distinct. We use
+   the same glowing-ASCII technique as the chart: glyphs from a ramp,
+   intensity per pixel, plus a couple of bloom passes via canvas filter.
+
+   The visual vocabulary:
+     - A circular silhouette (the limb) — every planet has one.
+     - One or two arc bands — meridian-like lines that imply a 3D sphere.
+     - Speckled surface "features" — bright spots scattered inside the
+       disc, with density tied to population.
+
+   Colors come from the active theme's planet hue (and dust hue for the
+   highlight side of the limb).                                         */
+const planetCanvas = document.getElementById('planetCanvas');
+const planetCtx = planetCanvas.getContext('2d');
+
+function drawPlanet(sys) {
+  const w = planetCanvas.width, h = planetCanvas.height;
+  planetCtx.clearRect(0, 0, w, h);
+
+  const theme = getTheme(state.themeId);
+  const baseColor = resolveColor(theme.hues.planet);
+  const limbColor = resolveColor(theme.hues.dust);
+
+  // Reuse the same PRNG style as the description generator so the planet
+  // visual is deterministic from the seed and stable across renders.
+  const r = makeDescRng(sys.seed);
+
+  const cx = w / 2, cy = h / 2;
+  const radius = Math.min(w, h) * 0.42;
+
+  // Cells in a small grid — keep this independent of the chart cell size.
+  const cell = 6;
+  const cols = Math.ceil(w / cell);
+  const rows = Math.ceil(h / cell);
+  const grid = new Float32Array(cols * rows);
+
+  // 1. Draw the limb as a circle of points
+  const limbSteps = Math.PI * 2 / 0.04;
+  for (let a = 0; a < Math.PI * 2; a += 0.04) {
+    const px = cx + Math.cos(a) * radius;
+    const py = cy + Math.sin(a) * radius;
+    const gx = Math.round(px / cell), gy = Math.round(py / cell);
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+    // Brighter on the side opposite the "sun" (we pretend a light source
+    // is up-left). Side facing it is dimmer because backlit.
+    const lightDot = -Math.cos(a) * 0.7 - Math.sin(a) * 0.7; // -1..1
+    const v = 0.55 + lightDot * 0.4;
+    grid[gy * cols + gx] = Math.max(grid[gy * cols + gx], v);
+  }
+
+  // 2. One or two meridian arcs — gives the impression of a 3D sphere
+  const arcCount = 1 + (r.next() % 2);
+  for (let m = 0; m < arcCount; m++) {
+    // Each meridian is an ellipse with random eccentricity, simulating a
+    // great circle at some angle to the viewer.
+    const tilt = (r.next() % 1000) / 1000 * Math.PI;
+    const squish = 0.2 + (r.next() % 100) / 100 * 0.7;  // ellipse aspect
+    for (let a = 0; a < Math.PI * 2; a += 0.06) {
+      const lx = Math.cos(a) * radius * 0.95;
+      const ly = Math.sin(a) * radius * 0.95 * squish;
+      // rotate by tilt
+      const rx = lx * Math.cos(tilt) - ly * Math.sin(tilt);
+      const ry = lx * Math.sin(tilt) + ly * Math.cos(tilt);
+      const px = cx + rx, py = cy + ry;
+      // Only plot if inside the disc (gives the "wraps around the sphere"
+      // illusion — far side hidden).
+      const distFromCenter = Math.hypot(px - cx, py - cy);
+      if (distFromCenter > radius * 0.95) continue;
+      const gx = Math.round(px / cell), gy = Math.round(py / cell);
+      if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+      const idx = gy * cols + gx;
+      if (0.45 > grid[idx]) grid[idx] = 0.45;
+    }
+  }
+
+  // 3. Surface speckles — number scaled by population (richer worlds
+  // get more visible cities). Capped so it never overwhelms the limb.
+  const speckles = Math.min(40, Math.floor(sys.population * 3 + 8));
+  for (let i = 0; i < speckles; i++) {
+    // Pick a point inside the disc
+    const a = (r.next() % 10000) / 10000 * Math.PI * 2;
+    const dist = Math.sqrt((r.next() % 10000) / 10000) * radius * 0.85;
+    const px = cx + Math.cos(a) * dist;
+    const py = cy + Math.sin(a) * dist;
+    const gx = Math.round(px / cell), gy = Math.round(py / cell);
+    if (gx < 0 || gx >= cols || gy < 0 || gy >= rows) continue;
+    const idx = gy * cols + gx;
+    const v = 0.6 + (r.next() % 100) / 100 * 0.35;
+    if (v > grid[idx]) grid[idx] = v;
+  }
+
+  // Render the grid as glyphs.
+  planetCtx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+  planetCtx.textBaseline = 'middle';
+  planetCtx.textAlign = 'center';
+
+  // Two passes: sharp + blurred-additive bloom.
+  const passes = ['sharp', 'bloom'];
+  for (const pass of passes) {
+    if (pass === 'bloom') {
+      planetCtx.filter = 'blur(3px)';
+      planetCtx.globalCompositeOperation = 'lighter';
+      planetCtx.globalAlpha = 0.55;
+    }
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < cols; gx++) {
+        const v = grid[gy * cols + gx];
+        if (v < 0.1) continue;
+        const ch = ramp[Math.min(ramp.length - 1, Math.floor(v * ramp.length))];
+        const x = gx * cell + cell / 2, y = gy * cell + cell / 2;
+        // Limb cells (those at radius edge) tint toward dust color so we
+        // get a slight "rim light" effect; interior uses the planet hue.
+        const distFromCenter = Math.hypot(x - cx, y - cy);
+        const isLimb = distFromCenter > radius * 0.85;
+        const c = isLimb ? limbColor : baseColor;
+        const light = Math.max(20, Math.min(95, c.l - 15 + v * 40));
+        planetCtx.fillStyle = `hsl(${c.h}, ${c.s}%, ${light}%)`;
+        planetCtx.fillText(ch, x, y);
+      }
+    }
+  }
+  planetCtx.filter = 'none';
+  planetCtx.globalCompositeOperation = 'source-over';
+  planetCtx.globalAlpha = 1;
+}
+
 /* ============================================================================
    Renderer — same glowing-ASCII pipeline as before, applied to the chart.
    ============================================================================ */
@@ -591,6 +814,7 @@ const state = {
   glow: 0.7,
   cellSize: 9,
   themeId: loadSavedThemeId(),
+  lastPlanetSystem: null,
 };
 
 function resize() {
@@ -631,7 +855,7 @@ applyThemeToCss(getTheme(state.themeId));
    the horizontal info strip at the bottom. The strip spans full width,
    so we just shrink the bottom margin to its height plus a little
    breathing room. Sizes here mirror the CSS — keep in sync.            */
-const PANEL_HEIGHT = 130;     // #info height
+const PANEL_HEIGHT = 168;     // #info height
 const TITLE_HEIGHT = 80;      // top margin (title + galaxy tabs)
 function chartBounds() {
   const marginX = 60;
@@ -730,6 +954,8 @@ function renderThemeMenu() {
       state.themeId = t.id;
       saveThemeId(t.id);
       applyThemeToCss(getTheme(t.id));
+      // Force planet redraw with the new theme colors.
+      state.lastPlanetSystem = null;
       updateThemeButton();
       renderThemeMenu();
       closeThemeMenu();
@@ -984,7 +1210,21 @@ function frame(now) {
     document.getElementById('sysPop').textContent = `${nearest.population.toFixed(1)} B`;
     document.getElementById('sysProd').textContent = nearest.productivity.toLocaleString();
     document.getElementById('sysRad').textContent = `${nearest.radius.toLocaleString()} km`;
+
+    // Inhabitants demonym + status. Use a tiny dedicated rng seeded from
+    // the system so values stay stable across frames.
+    const peopleRng = makeDescRng(nearest.seed);
+    document.getElementById('sysPeople').textContent = inhabitants(nearest.name, peopleRng);
+    document.getElementById('sysStatus').textContent = systemStatus(nearest);
+
     document.getElementById('sysDesc').textContent = describeSystem(nearest);
+
+    // Redraw the planet only when the selected system changes — it's
+    // expensive and constant per system.
+    if (state.lastPlanetSystem !== nearest) {
+      drawPlanet(nearest);
+      state.lastPlanetSystem = nearest;
+    }
   }
 
   requestAnimationFrame(frame);
