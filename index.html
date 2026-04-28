@@ -1216,12 +1216,142 @@ function renderFlight(state, theme, dt){
   document.getElementById('hYaw').textContent = `${(yaw*180/Math.PI).toFixed(0)}°`;
 }
 
-/* ===== 12. Hyperspace screen — placeholder for commit 2 ===== */
+/* ===== 12. Hyperspace screen ===== */
+/**
+ * The tunnel effect. Concentric rings of points race toward the camera,
+ * accelerating with hyperspaceT. Each ring is parameterized by:
+ *   - distance Z from camera (decreases over time)
+ *   - phase angle offset so rings don't all line up
+ *   - radius (rings further away project smaller; closer rings flare large)
+ *
+ * As we approach arrival (t > 0.85), a bright point in the center grows
+ * and fades to white, which we cross-fade with the destination's planet
+ * silhouette. By t = 1 the screen is mostly the destination glow.
+ *
+ * We re-spawn rings whose Z drops below 0 from far away (Z = TUNNEL_DEPTH),
+ * giving the impression of an endless corridor.
+ */
+const TUNNEL_DEPTH = 60;
+const TUNNEL_RING_COUNT = 18;
+const TUNNEL_POINTS_PER_RING = 24;
+const tunnelRings = [];
+function initTunnelRings(){
+  tunnelRings.length = 0;
+  for(let i=0;i<TUNNEL_RING_COUNT;i++){
+    tunnelRings.push({
+      z: (i / TUNNEL_RING_COUNT) * TUNNEL_DEPTH,
+      // Each ring rotates around its axis at a different rate, so the
+      // points form a spinning corridor rather than a static one.
+      phase: Math.random() * Math.PI * 2,
+      spinRate: 0.3 + Math.random() * 0.6,
+      // Slight per-ring radius wobble keeps the tunnel from looking like
+      // a perfect cylinder — more like a wormhole.
+      radiusJitter: 0.85 + Math.random() * 0.3,
+    });
+  }
+}
+initTunnelRings();
+let lastHyperspaceT = -1;
+
 function renderHyperspace(state, theme, dt){
-  // For now just show black; the tunnel effect comes in commit 2.
   const W=innerWidth, H=innerHeight;
+  const cell = 7;
+  const cols = Math.ceil(W/cell), rows = Math.ceil(H/cell);
+  const t = state.hyperspaceT;
+
+  // Reset the tunnel state when a new jump begins.
+  if(t < 0.05 && lastHyperspaceT > 0.5) initTunnelRings();
+  lastHyperspaceT = t;
+
   ctx.fillStyle='rgba(2, 3, 10, 1)';
   ctx.fillRect(0, 0, W, H);
+
+  const gTunnel = new Float32Array(cols*rows);
+  const gCore   = new Float32Array(cols*rows);  // bright destination at center
+
+  // Speed ramp: ease-in-out so the jump accelerates, peaks, then slows
+  // for the arrival flash.
+  // 0..0.85 we're racing in; 0.85..1 we decelerate into the destination.
+  const phase = t < 0.85 ? t / 0.85 : 1.0;
+  const baseSpeed = 35 + 60 * phase;     // units/sec the rings approach at
+
+  const FOV = 380;
+
+  // Step + draw rings
+  for(const ring of tunnelRings){
+    ring.z -= baseSpeed * dt;
+    ring.phase += ring.spinRate * dt;
+    if(ring.z < 0.5) ring.z += TUNNEL_DEPTH;     // recycle far behind
+
+    // Project the ring's points
+    const radius = 12 * ring.radiusJitter;
+    for(let p=0;p<TUNNEL_POINTS_PER_RING;p++){
+      const a = ring.phase + (p / TUNNEL_POINTS_PER_RING) * Math.PI * 2;
+      const wx = Math.cos(a) * radius;
+      const wy = Math.sin(a) * radius;
+      const wz = ring.z;
+      // Standard perspective projection
+      const px = (wx * FOV) / wz + W/2;
+      const py = (-wy * FOV) / wz + H/2;
+      const gx = Math.round(px/cell), gy = Math.round(py/cell);
+      if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+      // Closer rings are brighter and bigger
+      const brightness = Math.max(0.2, Math.min(1, 1 - wz/TUNNEL_DEPTH));
+      const idx = gy*cols + gx;
+      if(brightness > gTunnel[idx]) gTunnel[idx] = brightness;
+
+      // Streak: connect to the previous-frame projection by drawing a
+      // short segment back along the velocity direction. This is what
+      // gives the tunnel its motion-blurred light-trail look.
+      const wzPrev = wz + baseSpeed * dt;   // where this point was a frame ago
+      if(wzPrev > 0.5){
+        const pxP = (wx * FOV) / wzPrev + W/2;
+        const pyP = (-wy * FOV) / wzPrev + H/2;
+        const dx = px-pxP, dy = py-pyP;
+        const steps = Math.min(8, Math.ceil(Math.hypot(dx, dy)/cell));
+        for(let s=1;s<=steps;s++){
+          const f = s/steps;
+          const sx = Math.round((pxP + dx*f)/cell);
+          const sy = Math.round((pyP + dy*f)/cell);
+          if(sx<0||sx>=cols||sy<0||sy>=rows) continue;
+          const fade = brightness * (0.4 + f*0.6);
+          const idx2 = sy*cols+sx;
+          if(fade > gTunnel[idx2]) gTunnel[idx2] = fade;
+        }
+      }
+    }
+  }
+
+  // Destination core: a bright point that grows with t.
+  // Below t=0.5 it's barely visible; from 0.85 onward it dominates.
+  const cx = W/2, cy = H/2;
+  const coreSize = Math.max(0.5, 1 + 30 * Math.pow(t, 3));
+  const coreBright = Math.min(1, t * 1.8);
+  const cxCell = cx/cell, cyCell = cy/cell;
+  for(let dy=-Math.ceil(coreSize); dy<=Math.ceil(coreSize); dy++){
+    for(let dx=-Math.ceil(coreSize); dx<=Math.ceil(coreSize); dx++){
+      const d = Math.hypot(dx, dy);
+      if(d > coreSize) continue;
+      const gx = Math.round(cxCell + dx), gy = Math.round(cyCell + dy);
+      if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
+      const v = coreBright * Math.exp(-d / Math.max(2, coreSize*0.5));
+      const idx = gy*cols + gx;
+      if(v > gCore[idx]) gCore[idx] = v;
+    }
+  }
+
+  const layers=[
+    { name:'tunnel', grid:gTunnel, color:resolveColor(theme.hues.dust) },
+    { name:'core',   grid:gCore,   color:resolveColor(theme.hues.accent) },
+  ];
+  renderLayers(layers, cell, cols, rows, W, H);
+
+  // White flash on arrival — last 80ms before t=1.
+  if(t > 0.92){
+    const flashAlpha = (t - 0.92) / 0.08;
+    ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha * 0.85})`;
+    ctx.fillRect(0, 0, W, H);
+  }
 }
 
 /* ===== 13. Theme picker UI ===== */
