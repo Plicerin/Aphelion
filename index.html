@@ -337,6 +337,13 @@
     text-transform: uppercase;
     text-shadow: 0 0 18px var(--accent);
   }
+  #countdown .countdown-distance {
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
   #countdown .countdown-number {
     color: var(--accent);
     font-size: 96px;
@@ -364,6 +371,72 @@
     margin-top: 18px;
   }
   #countdown .countdown-cancel strong { color: var(--accent); font-weight: 600; }
+
+  /* ============== Target lock flyout ============== */
+  /* Anchored to the locked system on the chart with absolute positioning;
+     JS sets top/left each frame to track the system as the chart resizes
+     or the user pans (we don't pan yet, but this future-proofs it). */
+  #target-flyout {
+    position: fixed;
+    z-index: 7;
+    pointer-events: none;
+    /* Soft fade in so the flyout doesn't snap into existence. */
+    animation: target-flyout-in 0.18s ease-out;
+  }
+  #target-flyout[hidden] { display: none; }
+  @keyframes target-flyout-in {
+    from { opacity: 0; transform: translate(-4px, -4px); }
+    to   { opacity: 1; transform: translate(0, 0); }
+  }
+  /* The leader is a thin diagonal line from the system to the card. We
+     draw it with a rotated div rather than SVG to keep things simple —
+     JS computes the angle and length. */
+  #target-flyout .target-flyout-leader {
+    position: absolute;
+    /* JS sets width, transform-origin (anchored at the system end), and
+       rotation. The element starts at the system's screen position. */
+    height: 1px;
+    background: linear-gradient(90deg, var(--accent), transparent 100%);
+    box-shadow: 0 0 6px var(--accent);
+    transform-origin: 0 50%;
+    pointer-events: none;
+  }
+  #target-flyout .target-flyout-card {
+    position: absolute;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 8px 12px;
+    box-shadow: 0 0 18px rgba(124, 247, 255, 0.35);
+    min-width: 220px;
+    /* JS positions this so the leader meets its left edge. */
+  }
+  #target-flyout .target-flyout-status {
+    color: var(--accent);
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    text-shadow: 0 0 6px var(--accent);
+    margin-bottom: 3px;
+  }
+  #target-flyout .target-flyout-name {
+    color: var(--ink);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+  }
+  #target-flyout .target-flyout-meta {
+    color: var(--muted);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  #target-flyout .target-flyout-meta strong { color: var(--accent); font-weight: 700; }
+  #target-flyout .target-flyout-sep { margin: 0 6px; opacity: 0.5; }
 
   /* ============== Flight HUD ============== */
   #hud-bl, #hud-br {
@@ -485,10 +558,25 @@
   <!-- Hyperspace jump button (chart screen only) -->
   <button id="jump-btn" class="show-chart" type="button" disabled>JUMP</button>
 
+  <!-- Target-locked flyout (chart screen only, only when something is locked) -->
+  <div id="target-flyout" class="show-chart" hidden>
+    <div class="target-flyout-leader"></div>
+    <div class="target-flyout-card">
+      <div class="target-flyout-status">◉ Target Locked</div>
+      <div class="target-flyout-name" id="target-flyout-name">—</div>
+      <div class="target-flyout-meta">
+        <span id="target-flyout-distance">—</span>
+        <span class="target-flyout-sep">·</span>
+        <span class="target-flyout-hint">Click <strong>JUMP</strong> to engage</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Jump countdown overlay (chart screen only, only visible during countdown) -->
   <div id="countdown" class="show-chart" hidden>
-    <div class="countdown-label">JUMPING TO</div>
+    <div class="countdown-label">Engaging hyperdrive · jumping to</div>
     <div class="countdown-target" id="countdown-target">—</div>
+    <div class="countdown-distance" id="countdown-distance">—</div>
     <div class="countdown-number" id="countdown-number">3</div>
     <div class="countdown-cancel">Press <strong>ESC</strong> to cancel</div>
   </div>
@@ -1170,6 +1258,107 @@ function renderChart(state, theme, dt){
   // Update jump button: enabled only when something is locked.
   const jumpBtn = document.getElementById('jump-btn');
   jumpBtn.disabled = !chartLocked || !!countdown;
+
+  // Update the target-locked flyout (positioning + content).
+  updateTargetFlyout(state);
+}
+
+/* Position the target-locked flyout near the locked system, with a leader
+   line connecting the system to the card. Hidden when nothing is locked
+   or while the countdown is running.
+
+   Layout: the card sits offset from the system at a 45° angle, normally
+   to the upper-right. If that would put the card off-screen we flip
+   horizontally so it goes upper-left instead. The leader rotates to
+   meet the card's anchor point regardless of side.                    */
+const flyoutEl = document.getElementById('target-flyout');
+const flyoutLeaderEl = flyoutEl.querySelector('.target-flyout-leader');
+const flyoutCardEl = flyoutEl.querySelector('.target-flyout-card');
+const flyoutNameEl = document.getElementById('target-flyout-name');
+const flyoutDistEl = document.getElementById('target-flyout-distance');
+
+function updateTargetFlyout(state){
+  // Hide while countdown is running so it doesn't compete with the
+  // overlay, or whenever nothing is locked.
+  if(!chartLocked || countdown){
+    flyoutEl.hidden = true;
+    return;
+  }
+  if(flyoutEl.hidden) flyoutEl.hidden = false;
+
+  const [sx, sy] = chartToScreen(chartLocked.x, chartLocked.y);
+
+  // Card offset from the system. Default up-and-right; flip the X axis
+  // if the system is too close to the right edge, flip the Y axis if
+  // the system is too close to the top OR the bottom (to avoid the
+  // info strip below the chart).
+  const flipX = sx > innerWidth - 280;
+  const flipY = sy < 140 || sy > innerHeight - 200;
+  const offsetX = flipX ? -130 : 130;
+  const offsetY = flipY ? 90 : -90;
+
+  // Card position: top-left corner of the card sits at (sx + offsetX,
+  // sy + offsetY), but we anchor by its near edge (whichever side faces
+  // the system).
+  // To keep the math simple we position the flyout root at the system,
+  // then position the card and leader relative to it.
+  flyoutEl.style.left = `${sx}px`;
+  flyoutEl.style.top  = `${sy}px`;
+
+  // Card position relative to the flyout root (= system).
+  // We want the card's near-edge midpoint to be at (offsetX, offsetY).
+  // The card has an unknown rendered width; we set its left/right and
+  // top via translate so flip works without measuring.
+  if(flipX){
+    flyoutCardEl.style.left  = 'auto';
+    flyoutCardEl.style.right = `${-offsetX}px`;
+  } else {
+    flyoutCardEl.style.right = 'auto';
+    flyoutCardEl.style.left  = `${offsetX}px`;
+  }
+  flyoutCardEl.style.top = `${offsetY - 18}px`;     // small nudge so leader hits midline
+
+  // Leader: a line from the system (origin of the flyout root) to the
+  // card's near-edge anchor. We compute angle + length from offsetX/Y.
+  const dx = offsetX, dy = offsetY;
+  const len = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  flyoutLeaderEl.style.left = '0px';
+  flyoutLeaderEl.style.top  = '0px';
+  flyoutLeaderEl.style.width = `${len}px`;
+  flyoutLeaderEl.style.transform = `rotate(${angle}deg)`;
+
+  // Content
+  flyoutNameEl.textContent = chartLocked.name;
+  flyoutDistEl.textContent = formatDistance(state, chartLocked);
+}
+
+/**
+ * Compute the jump distance from the player's current system to the locked
+ * system. Distance is Euclidean in chart-space coordinates, scaled to
+ * read as "light years" — Elite-style numbers in the 0..15 ly range.
+ *
+ * If the player has no current system (just launched the game) we report
+ * the absolute coordinates of the destination instead.
+ */
+function formatDistance(state, target){
+  const current = state.currentSystemSeed
+    ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
+    : null;
+  if(!current){
+    return `Coords ${target.x}, ${target.y}`;
+  }
+  if(current === target){
+    return 'Current System';
+  }
+  const dx = target.x - current.x;
+  const dy = target.y - current.y;
+  // Chart-units to ly: chart is 256x128 representing a galactic sector.
+  // We pick a scale where typical neighbor jumps are 4-8 ly, which means
+  // ~0.5 ly per chart-unit horizontally. Y is half-resolution so distances
+  // along Y feel proportionally correct.
+  const ly = Math.hypot(dx * 0.5, dy * 0.5);
+  return `${ly.toFixed(1)} LY`;
 }
 
 /* ===== 11. Flight screen ===== */
@@ -1787,6 +1976,7 @@ function startCountdown(){
   if(!chartLocked || countdown) return;
   countdown = { remaining: COUNTDOWN_SECONDS, target: chartLocked, lastShown: -1 };
   countdownTargetEl.textContent = chartLocked.name;
+  document.getElementById('countdown-distance').textContent = formatDistance(game, chartLocked);
   countdownEl.hidden = false;
   // Force a tick render immediately so the user sees "3" right away.
   tickCountdown(0);
