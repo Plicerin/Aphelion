@@ -2,19 +2,28 @@
  * Save/load tests.
  *
  * Properties that matter:
- *   - Round trip: save then load returns the same data.
- *   - Empty storage returns null (not undefined, not throw).
+ *   - Round trip: save then load returns the same data (cargo, credits,
+ *     fuel preserved exactly).
+ *   - Empty storage returns null.
  *   - Malformed JSON returns null.
  *   - Wrong shape returns null (no partial application).
  *   - Future versions are rejected.
+ *   - Older versions are migrated forward with sensible defaults.
  *   - Storage failures are non-fatal.
- *   - clearSave actually clears.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { saveGame, loadGame, clearSave } from '../src/sim/save';
 
 const STORAGE_KEY = 'aphelion.save';
+
+const sampleSave = {
+  galaxyIdx: 3,
+  currentSystemSeed: [0x1234, 0x5678, 0x9abc] as [number, number, number],
+  cargo: { food: 5, computers: 2 },
+  credits: 4250,
+  fuel: 3.5,
+};
 
 describe('save / load', () => {
   beforeEach(() => {
@@ -25,18 +34,21 @@ describe('save / load', () => {
     expect(loadGame()).toBeNull();
   });
 
-  it('round-trips a valid save', () => {
-    const ok = saveGame({ galaxyIdx: 3, currentSystemSeed: [0x1234, 0x5678, 0x9abc] });
+  it('round-trips a valid save (cargo, credits, fuel preserved)', () => {
+    const ok = saveGame(sampleSave);
     expect(ok).toBe(true);
     const loaded = loadGame();
     expect(loaded).not.toBeNull();
     expect(loaded!.galaxyIdx).toBe(3);
     expect(loaded!.currentSystemSeed).toEqual([0x1234, 0x5678, 0x9abc]);
-    expect(loaded!.version).toBe(1);
+    expect(loaded!.cargo).toEqual({ food: 5, computers: 2 });
+    expect(loaded!.credits).toBe(4250);
+    expect(loaded!.fuel).toBe(3.5);
+    expect(loaded!.version).toBe(2);
   });
 
   it('clearSave removes the save', () => {
-    saveGame({ galaxyIdx: 0, currentSystemSeed: [1, 2, 3] });
+    saveGame(sampleSave);
     expect(loadGame()).not.toBeNull();
     clearSave();
     expect(loadGame()).toBeNull();
@@ -59,7 +71,8 @@ describe('save / load', () => {
   it('rejects a save with out-of-range galaxyIdx', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        version: 1, galaxyIdx: 99, currentSystemSeed: [0, 0, 0],
+        version: 2, galaxyIdx: 99, currentSystemSeed: [0, 0, 0],
+        cargo: {}, credits: 0, fuel: 0,
       }));
     } catch { return; }
     expect(loadGame()).toBeNull();
@@ -68,7 +81,8 @@ describe('save / load', () => {
   it('rejects a save with a malformed seed triple', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        version: 1, galaxyIdx: 0, currentSystemSeed: [0, 0],   // wrong length
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0],
+        cargo: {}, credits: 0, fuel: 0,
       }));
     } catch { return; }
     expect(loadGame()).toBeNull();
@@ -77,7 +91,8 @@ describe('save / load', () => {
   it('rejects a save with seed values out of 16-bit range', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        version: 1, galaxyIdx: 0, currentSystemSeed: [0, 0, 99999],
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 99999],
+        cargo: {}, credits: 0, fuel: 0,
       }));
     } catch { return; }
     expect(loadGame()).toBeNull();
@@ -87,13 +102,99 @@ describe('save / load', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         version: 999, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: {}, credits: 0, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('migrates a v1 save: applies defaults for cargo / credits / fuel', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 1, galaxyIdx: 2, currentSystemSeed: [1, 2, 3],
+      }));
+    } catch { return; }
+    const loaded = loadGame();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.galaxyIdx).toBe(2);
+    expect(loaded!.cargo).toEqual({});
+    expect(loaded!.credits).toBe(100);
+    expect(loaded!.fuel).toBe(7);
+    expect(loaded!.version).toBe(2);
+  });
+
+  it('rejects v2+ save with non-object cargo', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: 'food', credits: 0, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with array cargo', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: [1, 2, 3], credits: 0, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with negative cargo value', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: { food: -1 }, credits: 0, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with non-numeric cargo value', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: { food: 'lots' }, credits: 0, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with negative credits', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: {}, credits: -5, fuel: 0,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with infinite credits', () => {
+    // JSON.stringify converts Infinity to null, so we have to write the
+    // value manually to ensure it's actually infinite when parsed.
+    try {
+      localStorage.setItem(STORAGE_KEY,
+        '{"version":2,"galaxyIdx":0,"currentSystemSeed":[0,0,0],"cargo":{},"credits":1e500,"fuel":0}');
+    } catch { return; }
+    expect(loadGame()).toBeNull();
+  });
+
+  it('rejects v2+ save with negative fuel', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: {}, credits: 0, fuel: -2,
       }));
     } catch { return; }
     expect(loadGame()).toBeNull();
   });
 
   it('save and clear are best-effort and never throw', () => {
-    expect(() => saveGame({ galaxyIdx: 0, currentSystemSeed: [0, 0, 0] })).not.toThrow();
+    expect(() => saveGame(sampleSave)).not.toThrow();
     expect(() => clearSave()).not.toThrow();
   });
 });

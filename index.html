@@ -2954,10 +2954,17 @@ const _startingSystem = _initialGalaxies[0].systems[0];
    reloads. Only fields the player has *chosen* are saved — everything
    that's a function of the seed regenerates, everything transient resets. */
 const SAVE_KEY = 'aphelion.save';
-const SAVE_VERSION = 1;
-function saveGame(galaxyIdx, currentSystemSeed){
+const SAVE_VERSION = 2;
+function saveGame(data){
   try {
-    const payload = { version: SAVE_VERSION, galaxyIdx, currentSystemSeed };
+    const payload = {
+      version: SAVE_VERSION,
+      galaxyIdx: data.galaxyIdx,
+      currentSystemSeed: data.currentSystemSeed,
+      cargo: data.cargo,
+      credits: data.credits,
+      fuel: data.fuel,
+    };
     localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
     return true;
   } catch { return false; }
@@ -2974,7 +2981,25 @@ function loadGame(){
     for(const v of p.currentSystemSeed){
       if(typeof v !== 'number' || v < 0 || v > 0xffff) return null;
     }
-    return { galaxyIdx: p.galaxyIdx, currentSystemSeed: p.currentSystemSeed };
+    // v2 fields with defaults for older saves.
+    let cargo = {}, credits = INITIAL_CREDITS, fuel = FUEL_MAX_LY;
+    if(p.version >= 2){
+      if(!p.cargo || typeof p.cargo !== 'object' || Array.isArray(p.cargo)) return null;
+      for(const k of Object.keys(p.cargo)){
+        const v = p.cargo[k];
+        if(typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null;
+      }
+      cargo = { ...p.cargo };
+      if(typeof p.credits !== 'number' || !Number.isFinite(p.credits) || p.credits < 0) return null;
+      credits = p.credits;
+      if(typeof p.fuel !== 'number' || !Number.isFinite(p.fuel) || p.fuel < 0) return null;
+      fuel = p.fuel;
+    }
+    return {
+      galaxyIdx: p.galaxyIdx,
+      currentSystemSeed: p.currentSystemSeed,
+      cargo, credits, fuel,
+    };
   } catch { return null; }
 }
 
@@ -2983,6 +3008,9 @@ function loadGame(){
 const _savedGame = loadGame();
 let _initialGalaxyIdx = 0;
 let _initialSystemSeed = _startingSystem.seed;
+let _initialCargo = emptyCargo();
+let _initialCredits = INITIAL_CREDITS;
+let _initialFuel = FUEL_MAX_LY;
 if(_savedGame){
   // Validate the saved system actually exists in the saved galaxy. Saves
   // older than the current seed-generation algorithm could reference a
@@ -2997,6 +3025,11 @@ if(_savedGame){
     _initialGalaxyIdx = _savedGame.galaxyIdx;
     _initialSystemSeed = _savedGame.currentSystemSeed;
   }
+  // Cargo / credits / fuel are independent of system validity — keep
+  // them across reloads even if the system seed turned stale.
+  _initialCargo   = { ...emptyCargo(), ..._savedGame.cargo };
+  _initialCredits = _savedGame.credits;
+  _initialFuel    = Math.min(FUEL_MAX_LY, _savedGame.fuel);
 }
 
 let game = {
@@ -3007,10 +3040,10 @@ let game = {
   selectedSystemSeed: null,
   ship: INITIAL_SHIP,
   hyperspaceT: 0,
-  fuel: FUEL_MAX_LY,        // refilled at stations later; resets on reload for now
+  fuel: _initialFuel,       // persisted across reloads (v2+ save)
   dockingT: 0,              // 0..1 progress toward "tuning in" at anchor
-  cargo: emptyCargo(),      // per-commodity holdings
-  credits: INITIAL_CREDITS, // currency balance
+  cargo: _initialCargo,     // persisted across reloads (v2+ save)
+  credits: _initialCredits, // persisted across reloads (v2+ save)
   themeId: loadSavedThemeId(),
 };
 
@@ -3019,13 +3052,24 @@ function dispatch(action){
   game = { ...game, ...reduce(game, action) };
   document.body.dataset.screen = game.screen;
   updateTitle();
-  // Auto-save after any action that changed persistent state. We compare
-  // against the previous values rather than always saving so we don't
-  // hammer localStorage on every dispatch.
+  // Auto-save when a persisted field changes. Buy/sell don't go through
+  // dispatch, so they save explicitly after each transaction.
   if(prev.galaxyIdx !== game.galaxyIdx ||
-     prev.currentSystemSeed !== game.currentSystemSeed){
-    saveGame(game.galaxyIdx, game.currentSystemSeed);
+     prev.currentSystemSeed !== game.currentSystemSeed ||
+     prev.fuel !== game.fuel){
+    persistGame();
   }
+}
+
+// Single source of truth for what gets persisted.
+function persistGame(){
+  saveGame({
+    galaxyIdx: game.galaxyIdx,
+    currentSystemSeed: game.currentSystemSeed,
+    cargo: game.cargo,
+    credits: game.credits,
+    fuel: game.fuel,
+  });
 }
 /* ---- Trade screen rendering ---- */
 let _tradeSelectedId = COMMODITIES[0].id;
@@ -3146,6 +3190,7 @@ function renderTradeScreen(sys){
       if(!canBuy(price, _tradeQty, cargoUsed(game.cargo), CARGO_CAPACITY, game.credits, isTonne)) return;
       const r = applyBuy(game.cargo, game.credits, sel.id, _tradeQty, price);
       game = { ...game, cargo: r.cargo, credits: r.credits };
+      persistGame();
       renderTradeScreen(sys);
     });
   }
@@ -3155,6 +3200,7 @@ function renderTradeScreen(sys){
       if(!canSell(heldNow, _tradeQty)) return;
       const r = applySell(game.cargo, game.credits, sel.id, _tradeQty, price);
       game = { ...game, cargo: r.cargo, credits: r.credits };
+      persistGame();
       renderTradeScreen(sys);
     });
   }
