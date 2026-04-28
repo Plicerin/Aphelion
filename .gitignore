@@ -35,3 +35,8 @@ coverage/
 .cache/
 .parcel-cache/
 .vite/
+
+# Transit artifacts (archives, working copies kept at repo root)
+*.tar.gz
+*.zip
+/HANDOVER.md
