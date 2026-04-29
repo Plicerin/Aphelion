@@ -802,6 +802,36 @@
     letter-spacing: 0.22em;
   }
 
+  /* Jump-denied flash — appears briefly when a hyperspace dispatch is
+     rejected, so the user understands why nothing happened. */
+  #jump-denied {
+    position: fixed;
+    top: 35%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 9;
+    color: var(--warn);
+    text-shadow: 0 0 14px var(--warn);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    padding: 16px 28px;
+    border: 1px solid var(--warn);
+    border-radius: 6px;
+    background: rgba(20, 6, 6, 0.6);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    pointer-events: none;
+    animation: jump-denied-fade 1.6s ease-out forwards;
+  }
+  @keyframes jump-denied-fade {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+    12%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    65%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+  }
+
   /* "Open chart" button visible in flight */
   #open-chart-btn {
     position: fixed;
@@ -1803,6 +1833,7 @@ function renderChart(state, theme, dt){
   const gSystem=new Float32Array(cols*rows);
   const gHovered=new Float32Array(cols*rows);  // dim highlight under cursor
   const gLocked=new Float32Array(cols*rows);   // bright pulsing lock
+  const gCurrent=new Float32Array(cols*rows);  // YOU ARE HERE — the system the player is parked at
   const gCursor=new Float32Array(cols*rows);
   const gGrid=new Float32Array(cols*rows);
 
@@ -1826,27 +1857,53 @@ function renderChart(state, theme, dt){
   const galaxy = state.galaxies[state.galaxyIdx];
   const nearest = nearestSystem(galaxy, chartState.cursorX, chartState.cursorY);
   chartHovered = nearest;
+  const currentSys = state.currentSystemSeed
+    ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
+    : null;
 
   for(const sys of galaxy.systems){
     const[sx, sy]=chartToScreen(sys.x, sys.y);
     const gx=Math.round(sx/cell), gy=Math.round(sy/cell);
     if(gx<0||gx>=cols||gy<0||gy>=rows) continue;
     const brightness = 0.45 + (sys.techLevel/15)*0.5;
+    const isCurrent = sys === currentSys;
     const isLocked = sys === chartLocked;
-    const isHovered = sys === nearest && !isLocked;
+    const isHovered = sys === nearest && !isLocked && !isCurrent;
     let grid;
-    if(isLocked) grid = gLocked;
+    if(isCurrent) grid = gCurrent;     // YOU ARE HERE wins over locked/hovered
+    else if(isLocked) grid = gLocked;
     else if(isHovered) grid = gHovered;
     else grid = gSystem;
     const idx=gy*cols+gx;
     if(brightness > grid[idx]) grid[idx]=brightness;
 
+    // Current system: bright pulsing ring + outer ring so you can see
+    // where you are at a glance. This is the most prominent marker.
+    if(isCurrent){
+      const pulse = 0.85 + 0.15*Math.sin(chartState.t*4);
+      // 8-cell adjacent ring (full halo)
+      for(const[ox,oy]of[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]){
+        const x=gx+ox, y=gy+oy;
+        if(x<0||x>=cols||y<0||y>=rows) continue;
+        const v = pulse * 0.95;
+        if(v > gCurrent[y*cols+x]) gCurrent[y*cols+x] = v;
+      }
+      // Outer ring at radius 2 — distinguishes "current" from "locked"
+      // by being larger.
+      const outerPulse = 0.55 + 0.2*Math.sin(chartState.t*4 + Math.PI);
+      for(const[ox,oy]of[[-2,-1],[-2,0],[-2,1],[2,-1],[2,0],[2,1],
+                          [-1,-2],[0,-2],[1,-2],[-1,2],[0,2],[1,2]]){
+        const x=gx+ox, y=gy+oy;
+        if(x<0||x>=cols||y<0||y>=rows) continue;
+        if(outerPulse > gCurrent[y*cols+x]) gCurrent[y*cols+x] = outerPulse;
+      }
+    }
     // Locked target: bright pulsing halo of nearby cells, larger and
     // brighter than the hover halo. This is what makes it visually
-    // unmistakable that the target is committed.
-    if(isLocked){
+    // unmistakable that the target is committed. (Only when not also
+    // current — the current marker takes priority.)
+    if(isLocked && !isCurrent){
       const pulse = 0.7 + 0.3*Math.sin(chartState.t*5);
-      // 8-cell ring around the locked system
       for(const[ox,oy]of[[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]]){
         const x=gx+ox, y=gy+oy;
         if(x<0||x>=cols||y<0||y>=rows) continue;
@@ -1890,9 +1947,26 @@ function renderChart(state, theme, dt){
     { name:'system',  grid:gSystem,   color:resolveColor(theme.hues.system) },
     { name:'hovered', grid:gHovered,  color:resolveColor(theme.hues.system) },
     { name:'locked',  grid:gLocked,   color:resolveColor(theme.hues.selected) },
+    // Current system uses the warn hue — distinct from system / locked /
+    // hover so it reads instantly as "you are here".
+    { name:'current', grid:gCurrent,  color:resolveColor(theme.hues.warn) },
     { name:'cursor',  grid:gCursor,   color:resolveColor(theme.hues.selected) },
   ];
   renderLayers(layers, cell, cols, rows, W, H);
+
+  // "YOU ARE HERE" label above the current system.
+  if(currentSys){
+    const [csx, csy] = chartToScreen(currentSys.x, currentSys.y);
+    const c = resolveColor(theme.hues.warn);
+    ctx.font = '700 9px ui-monospace, "JetBrains Mono", monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = `hsl(${c.h}, 95%, 70%)`;
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = `hsl(${c.h}, ${c.s}%, 75%)`;
+    ctx.fillText(`◉ ${currentSys.name.toUpperCase()}`, csx, csy - 26);
+    ctx.shadowBlur = 0;
+  }
 
   // Update info panel — follows hover, not lock, so the player can browse
   // around the chart even after committing to a destination.
@@ -2110,7 +2184,11 @@ function jumpReadiness(state, target){
   const cur = state.currentSystemSeed
     ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
     : null;
-  if(!cur || cur === target) return { ready: true, reason: null };
+  // Same-system jump: rejected. The reducer's mass-lock check would
+  // fire even though no real jump is happening, leading to a silent
+  // rejection after the countdown — bad UX.
+  if(cur && cur === target) return { ready: false, reason: 'Already here' };
+  if(!cur) return { ready: true, reason: null };
   const ly = Math.hypot((target.x - cur.x) * 0.5, (target.y - cur.y) * 0.5);
   if(!canJump(state.fuel ?? FUEL_MAX_LY, ly)){
     return { ready: false, reason: 'Insufficient fuel' };
@@ -3615,8 +3693,16 @@ function tickCountdown(dt){
     const target = countdown.target;
     cancelCountdown();
     dispatch({ type: 'select-system', seed: target.seed });
+    const beforeScreen = game.screen;
     dispatch({ type: 'begin-hyperspace' });
     chartLocked = null;
+    // Defense in depth: if the dispatch failed (jumpReadiness should
+    // have caught it earlier, but in case there's a discrepancy) tell
+    // the player rather than silently dumping them on the chart.
+    if(game.screen === beforeScreen){
+      const r = jumpReadiness(game, target);
+      showJumpDenied(r.reason || 'Jump denied');
+    }
     return;
   }
   const shown = Math.ceil(countdown.remaining);
@@ -3648,6 +3734,19 @@ document.getElementById('target-flyout-jump').addEventListener('click', (e)=>{
 document.getElementById('open-chart-btn').addEventListener('click', ()=>{
   dispatch({ type:'open-chart' });
 });
+
+// Jump-denied flash. Creates an ephemeral DOM node that auto-removes
+// when the CSS animation finishes. Lightweight; no module-scope state.
+function showJumpDenied(reason){
+  // Replace any existing node so back-to-back fails don't stack.
+  const old = document.getElementById('jump-denied');
+  if(old) old.remove();
+  const el = document.createElement('div');
+  el.id = 'jump-denied';
+  el.textContent = `⚠ ${reason}`;
+  document.body.appendChild(el);
+  el.addEventListener('animationend', () => el.remove(), { once: true });
+}
 
 // Launch button on the docked overlay
 document.getElementById('launchBtn').addEventListener('click', ()=>{
