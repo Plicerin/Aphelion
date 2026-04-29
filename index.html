@@ -1900,24 +1900,38 @@ const glyphAtlas = {
     sharpCtx.fillStyle = `hsl(${hue}, ${sat}%, ${lightness}%)`;
     sharpCtx.fillText(ch, center, center);
 
-    // Halo source — more saturated and only a touch brighter than the
-    // sharp character. Same lightness keeps the halo coloured rather
-    // than washing out toward white when the blurs stack additively.
-    const [bright, brightCtx] = makeTile();
-    const glowSat   = Math.min(100, sat + 12);
-    const glowLight = Math.min(78,  lightness + 6);
-    brightCtx.fillStyle = `hsl(${hue}, ${glowSat}%, ${glowLight}%)`;
-    brightCtx.fillText(ch, center, center);
-
-    // Halo tile — progressive blur passes stacked additively.
+    // Halo tile via shadowBlur — a native canvas primitive that
+    // guarantees a Gaussian-blurred glow around drawn pixels in every
+    // browser, no DPR or filter-pipeline quirks. Stacking fillText
+    // calls with progressively larger shadowBlur radii under 'lighter'
+    // compositing replicates the CSS text-shadow neon recipe.
+    //
+    // Colour is varied across passes the same way classic neon-text
+    // CSS does: the tight inner passes are bright and near-white
+    // (the "hot tube core"), the wider outer passes are the saturated
+    // halo colour. Without that gradient the glow reads as just one
+    // big coloured smear; with it, characters look like glowing tubes.
+    //
+    // The character core in this tile gets covered by sprite.sharp at
+    // draw time, so only the spreading shadow matters visually.
     const [glow, glowCtx] = makeTile();
+    const haloSat   = Math.min(100, sat + 12);
+    const haloLight = Math.min(72,  lightness + 4);
     glowCtx.globalCompositeOperation = 'lighter';
-    for(const p of prof.passes){
-      glowCtx.filter = `blur(${p.blur}px)`;
+    const N = prof.passes.length;
+    for(let i = 0; i < N; i++){
+      const p = prof.passes[i];
+      const t = N === 1 ? 1 : i / (N - 1);   // 0 at tight core, 1 at wide halo
+      const passSat   = Math.round(haloSat * t + 25 * (1 - t));
+      const passLight = Math.round(haloLight * t + 92 * (1 - t));
+      const passColor = `hsl(${hue}, ${passSat}%, ${passLight}%)`;
+      glowCtx.fillStyle = passColor;
+      glowCtx.shadowColor = passColor;
+      glowCtx.shadowBlur = p.blur;
       glowCtx.globalAlpha = p.alpha;
-      glowCtx.drawImage(bright, 0, 0, tileSize, tileSize);
+      glowCtx.fillText(ch, center, center);
     }
-    glowCtx.filter = 'none';
+    glowCtx.shadowBlur = 0;
     glowCtx.globalAlpha = 1;
     glowCtx.globalCompositeOperation = 'source-over';
 
