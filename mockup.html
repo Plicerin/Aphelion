@@ -653,19 +653,26 @@
     }
 
     /* ============================================================
-       4. THE COBRA — drifts past as a target. Hull edges use a
-       per-position varied palette of bracket-and-equals glyphs.
+       4. THE COBRA — hovers in the upper-right quadrant of the canopy
+       as a "showroom" target. Continuous yaw with gentle pitch / roll
+       so we see every side of the model without it tumbling chaotically.
+       Tiny x/y bob keeps it from feeling statue-still. The hull edges
+       use a per-position varied palette of bracket-and-equals glyphs.
        ============================================================ */
     {
       const orbitT = state.t * 0.25;
+      // Hover position — upper-right of view, close enough (depth ~1.4)
+      // that the ~256-unit Cobra reads at ~73 px on screen.
       const shipPos = [
-        Math.sin(orbitT * 0.7) * 0.55,
-        0.05 + Math.sin(orbitT * 0.4) * 0.08,
-        -2.0 + Math.cos(orbitT * 0.5) * 0.4,
+        0.65 + Math.sin(orbitT * 0.4) * 0.04,
+        0.45 + Math.sin(orbitT * 0.6) * 0.04,
+        -0.4,
       ];
-      const yaw = orbitT * 1.1;
-      const pitch = 0.3 + Math.sin(orbitT * 0.6) * 0.2;
-      const roll = orbitT * 0.4;
+      // Showroom rotation: full yaw turn ~25 s; gentle pitch + roll
+      // oscillation so the ship doesn't tumble past visibility.
+      const yaw   = orbitT * 1.0;
+      const pitch = Math.sin(orbitT * 0.4) * 0.4;
+      const roll  = Math.sin(orbitT * 0.3) * 0.15;
       const SCALE = 0.0025;
 
       const tv = VERTICES.map(v => {
@@ -882,11 +889,12 @@
         }
       }
 
-      /* ---- radar blip (the Cobra) ---- */
+      /* ---- radar blip (the Cobra) — synced to the hover position
+              so the scanner shows the same target the player sees ---- */
       const orbitT = state.t * 0.25;
-      const shipScannerX = Math.sin(orbitT * 0.7) * 0.55;
-      const shipScannerY = 0.05 + Math.sin(orbitT * 0.4) * 0.08;
-      const shipScannerZ = -2.0 + Math.cos(orbitT * 0.5) * 0.4;
+      const shipScannerX = 0.65 + Math.sin(orbitT * 0.4) * 0.04;
+      const shipScannerY = 0.45 + Math.sin(orbitT * 0.6) * 0.04;
+      const shipScannerZ = -0.4;
       const blipX = rcx + shipScannerX * rw * 0.75;
       const blipY = rcy + (shipScannerZ + 2) * rh * 0.4;
       const stalkLen = -shipScannerY * dashH * 0.45;
