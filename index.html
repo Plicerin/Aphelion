@@ -2583,21 +2583,38 @@ const glyphAtlas = {
     wide:   [{ blur: 4,  alpha: 0.8 }, { blur: 12, alpha: 0.5 }, { blur: 28, alpha: 0.4 }, { blur: 60, alpha: 0.25 }],
   },
   PADDING: { tight: 20, normal: 40, wide: 80 },
-  cache: new Map(),
+
+  // Two caches:
+  //   neutralCache — keyed by (char, cell, profile). One per glyph,
+  //                  baked in light gray + white core. Cheap to build
+  //                  (a handful per scene), used as the source for
+  //                  the tint pipeline.
+  //   tintedCache  — keyed by (char, hue, sat, lightBucket, cell,
+  //                  profile). Pre-multiplied final tile, ready to
+  //                  drawImage in one call. LRU-capped so memory
+  //                  stays bounded; insertion-ordered Map handles
+  //                  the eviction loop.
+  neutralCache: new Map(),
+  tintedCache: new Map(),
+  TINTED_LIMIT: 384,
+
   scratchCanvas: null,
   scratchCtx: null,
 
   setProfile(name){
     if(this.PROFILES[name] && name !== this.profile){
       this.profile = name;
-      // Tile padding changes with profile, so the scratch canvas has
-      // to resize and the cached tiles are no longer the right size.
-      this.cache.clear();
+      // Tile padding changes with profile, so both caches go.
+      this.neutralCache.clear();
+      this.tintedCache.clear();
     }
   },
-  clear(){ this.cache.clear(); },
+  clear(){
+    this.neutralCache.clear();
+    this.tintedCache.clear();
+  },
 
-  bakeTile(ch, cell, profile){
+  bakeNeutralTile(ch, cell, profile){
     const passes = this.PROFILES[profile];
     const padding = this.PADDING[profile];
     const size = cell + padding * 2;
@@ -2609,9 +2626,8 @@ const glyphAtlas = {
     cx.textAlign = 'center';
     const x = size / 2, y = size / 2;
 
-    // Halo bake — neutral light gray under 'lighter' compositing.
-    // Light gray (not pure white) so multiply-tinting deepens the
-    // outer falloff toward the tint colour, reading as neon.
+    // Halo — neutral light gray, stacked shadowBlur passes under
+    // 'lighter' compositing.
     cx.globalCompositeOperation = 'lighter';
     cx.shadowColor = '#cccccc';
     cx.fillStyle = '#cccccc';
@@ -2620,9 +2636,7 @@ const glyphAtlas = {
       cx.globalAlpha = p.alpha;
       cx.fillText(ch, x, y);
     }
-    // Hot core — pure white, no shadow. Locks the centre near
-    // (1, 1, 1) so multiplying by any tint leaves it bright. Two
-    // passes for a sharper centre.
+    // Hot core — pure white, no shadow.
     cx.shadowBlur = 0;
     cx.shadowColor = 'transparent';
     cx.globalAlpha = 1;
@@ -2632,17 +2646,17 @@ const glyphAtlas = {
     cx.fillText(ch, x, y);
     cx.globalAlpha = 1;
     cx.globalCompositeOperation = 'source-over';
-    return { canvas: c, padding };
+    return c;
   },
 
-  getTile(ch, cell, profile){
+  getNeutralTile(ch, cell, profile){
     const key = ch + '|' + cell + '|' + profile;
-    let tile = this.cache.get(key);
-    if(!tile){
-      tile = this.bakeTile(ch, cell, profile);
-      this.cache.set(key, tile);
+    let canvas = this.neutralCache.get(key);
+    if(!canvas){
+      canvas = this.bakeNeutralTile(ch, cell, profile);
+      this.neutralCache.set(key, canvas);
     }
-    return tile;
+    return canvas;
   },
 
   ensureScratch(size){
@@ -2655,22 +2669,66 @@ const glyphAtlas = {
       this.scratchCanvas.height = size;
     }
   },
+
+  // Build a tinted tile by running the multiply + destination-in
+  // recipe once. The result is cached and reused for every cell
+  // that maps to the same colour bucket.
+  bakeTintedTile(neutral, tintColor){
+    const size = neutral.width;
+    this.ensureScratch(size);
+    const sx = this.scratchCtx;
+    sx.globalCompositeOperation = 'source-over';
+    sx.clearRect(0, 0, size, size);
+    sx.drawImage(neutral, 0, 0);
+    sx.globalCompositeOperation = 'multiply';
+    sx.fillStyle = tintColor;
+    sx.fillRect(0, 0, size, size);
+    sx.globalCompositeOperation = 'destination-in';
+    sx.drawImage(neutral, 0, 0);
+    sx.globalCompositeOperation = 'source-over';
+    // Copy out so the scratch can be reused without aliasing.
+    const out = document.createElement('canvas');
+    out.width = size; out.height = size;
+    out.getContext('2d').drawImage(this.scratchCanvas, 0, 0);
+    return out;
+  },
+
+  getTintedTile(ch, cell, profile, hueQ, satQ, lightBucket){
+    const key = ch + '|' + cell + '|' + profile + '|' + hueQ + '|' + satQ + '|' + lightBucket;
+    let tile = this.tintedCache.get(key);
+    if(tile){
+      // Move-to-end for LRU: delete + set bumps the entry to the
+      // tail of insertion order.
+      this.tintedCache.delete(key);
+      this.tintedCache.set(key, tile);
+      return tile;
+    }
+    const neutral = this.getNeutralTile(ch, cell, profile);
+    const tintColor = `hsl(${hueQ}, ${satQ}%, ${lightBucket}%)`;
+    tile = this.bakeTintedTile(neutral, tintColor);
+    if(this.tintedCache.size >= this.TINTED_LIMIT){
+      // Evict the oldest (least-recently-used) entry. Map iteration
+      // order is insertion order, so the first key is the oldest.
+      const oldest = this.tintedCache.keys().next().value;
+      this.tintedCache.delete(oldest);
+    }
+    this.tintedCache.set(key, tile);
+    return tile;
+  },
 };
 
 function renderLayers(layers, cell, cols, rows, W, H){
   const profile = glyphAtlas.profile;
-  // Use any tile to size the scratch canvas — all tiles for a given
-  // (cell, profile) share the same dimensions.
-  const sizingTile = glyphAtlas.getTile('M', cell, profile);
-  const tileSize = sizingTile.canvas.width;
-  glyphAtlas.ensureScratch(tileSize);
-  const tintCtx = glyphAtlas.scratchCtx;
-  const tintScratch = glyphAtlas.scratchCanvas;
+  // Tile size is constant for a given (cell, profile). Centre offset
+  // is half the tile so we hoist it out of the inner loop.
+  const sizingTile = glyphAtlas.getNeutralTile('M', cell, profile);
+  const half = sizingTile.width / 2;
+  const cellHalf = cell / 2;
 
+  ctx.globalCompositeOperation = 'lighter';
   for(let gy = 0; gy < rows; gy++){
     for(let gx = 0; gx < cols; gx++){
       const idx = gy * cols + gx;
-      // Pick the brightest layer at this cell.
       let bestV = 0, bestL = null;
       for(const L of layers){
         if(L.grid[idx] > bestV){ bestV = L.grid[idx]; bestL = L; }
@@ -2680,33 +2738,15 @@ function renderLayers(layers, cell, cols, rows, W, H){
         || ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
       const c = bestL.color;
       const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
-      const hue = c.h + hueDelta;
+      const hueQ = (c.h + hueDelta) | 0;
+      const satQ = c.s | 0;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV * 40));
-      const tintColor = `hsl(${hue}, ${c.s}%, ${light}%)`;
-      const tile = glyphAtlas.getTile(ch, cell, profile);
+      // 5-step lightness bucketing keeps the tinted cache compact
+      // while preserving the brightness ramp visually.
+      const lightBucket = Math.round(light / 5) * 5;
 
-      // Tint pipeline on the scratch canvas:
-      //   1. lay down the white tile (source-over)
-      //   2. multiply the cell's tint colour through it
-      //   3. re-apply the tile's alpha mask via destination-in so
-      //      the multiply doesn't leave a coloured square behind.
-      tintCtx.globalCompositeOperation = 'source-over';
-      tintCtx.clearRect(0, 0, tileSize, tileSize);
-      tintCtx.drawImage(tile.canvas, 0, 0);
-
-      tintCtx.globalCompositeOperation = 'multiply';
-      tintCtx.fillStyle = tintColor;
-      tintCtx.fillRect(0, 0, tileSize, tileSize);
-
-      tintCtx.globalCompositeOperation = 'destination-in';
-      tintCtx.drawImage(tile.canvas, 0, 0);
-
-      // Blit centred on the cell, additive so overlapping halos
-      // stack and fill the gaps between adjacent characters.
-      const dx = gx * cell + cell / 2 - tileSize / 2;
-      const dy = gy * cell + cell / 2 - tileSize / 2;
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.drawImage(tintScratch, dx, dy);
+      const tile = glyphAtlas.getTintedTile(ch, cell, profile, hueQ, satQ, lightBucket);
+      ctx.drawImage(tile, gx * cell + cellHalf - half, gy * cell + cellHalf - half);
     }
   }
   ctx.globalCompositeOperation = 'source-over';
