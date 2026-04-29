@@ -88,7 +88,6 @@
   }
   .toggles button:hover { background: rgba(124, 247, 255, 0.08); }
   .toggles button.on { background: var(--accent); color: #02030a; border-color: var(--accent); }
-  .styleToggles button.on { background: var(--accent-warm); color: #02030a; border-color: var(--accent-warm); }
   .group-label {
     margin: 12px 0 4px;
     font-size: 8px;
@@ -105,12 +104,6 @@
   <div id="panel">
     <h1>◉ STYLE MOCKUP v2</h1>
     <p class="sub">LAVE · AGRICULTURAL · TL5</p>
-
-    <div class="group-label">Style</div>
-    <div class="toggles styleToggles">
-      <button data-style="current" class="on">Current</button>
-      <button data-style="proposed">Proposed</button>
-    </div>
 
     <div class="group-label">Tuning</div>
     <div class="row">
@@ -267,11 +260,10 @@
 
   const state = {
     glow: 0.75,
-    worldCell: 8,        // bumps to 14 in proposed mode (auto)
-    instCell: 7,         // separate for instruments in proposed mode
+    worldCell: 14,
+    instCell: 7,
     speed: 1.0,
     preset: 'phosphor',
-    style: 'current',
     t: 0,
   };
 
@@ -339,21 +331,15 @@
   function drawStars() {
     sctx.fillStyle = '#02030a';
     sctx.fillRect(0, 0, innerWidth, innerHeight);
-    if (state.style === 'proposed') {
-      sctx.font = '12px ui-monospace, monospace';
-      sctx.textBaseline = 'middle';
-      sctx.textAlign = 'center';
-    }
+    sctx.font = '12px ui-monospace, monospace';
+    sctx.textBaseline = 'middle';
+    sctx.textAlign = 'center';
     for (const s of starList) {
       const tw = 0.6 + 0.4 * Math.sin(state.t * 1.5 + s.p);
       const a = s.m * tw;
       sctx.fillStyle = `rgba(200, 230, 255, ${a})`;
-      if (state.style === 'proposed') {
-        const ch = s.m > 0.55 ? '*' : s.m > 0.4 ? '+' : '·';
-        sctx.fillText(ch, s.x * innerWidth, s.y * innerHeight);
-      } else {
-        sctx.fillRect(s.x * innerWidth, s.y * innerHeight, 1, 1);
-      }
+      const ch = s.m > 0.55 ? '*' : s.m > 0.4 ? '+' : '·';
+      sctx.fillText(ch, s.x * innerWidth, s.y * innerHeight);
     }
   }
 
@@ -405,26 +391,6 @@
     });
   });
 
-  // Style toggle: snap world cell to a sensible default per style if the
-  // user hasn't deviated from the OTHER style's default.
-  const STYLE_WORLD_DEFAULTS = { current: 8, proposed: 14 };
-  document.querySelectorAll('[data-style]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('[data-style]').forEach(b => b.classList.remove('on'));
-      btn.classList.add('on');
-      const next = btn.dataset.style;
-      const otherDefault = STYLE_WORLD_DEFAULTS[next === 'current' ? 'proposed' : 'current'];
-      if (state.worldCell === otherDefault) {
-        const v = STYLE_WORLD_DEFAULTS[next];
-        state.worldCell = v;
-        document.getElementById('worldCell').value = v;
-        document.getElementById('worldCellVal').textContent = v;
-      }
-      state.style = next;
-      drawStars();
-    });
-  });
-
   /* ---------- offscreen color buckets for clean per-color bloom ---------- */
   const buckets = {};
   function getBucket(name) {
@@ -458,8 +424,7 @@
     const idx = gy * layer.cols + gx;
     if (v > layer.intensity[idx]) {
       layer.intensity[idx] = v;
-      if (state.style === 'proposed' && ch) layer.chars[idx] = ch;
-      else layer.chars[idx] = null;
+      layer.chars[idx] = ch || null;
     }
   }
   function plotLine(layer, x1, y1, x2, y2, brightness, ch) {
@@ -468,12 +433,7 @@
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       const gx = Math.round(x1 + dx*t), gy = Math.round(y1 + dy*t);
-      // For varied glyph mode, hash by cell position so each cell gets
-      // its own glyph along the line.
-      let cellCh = ch;
-      if (state.style === 'proposed' && typeof ch === 'function') {
-        cellCh = ch(gx, gy, dx, dy);
-      }
+      const cellCh = (typeof ch === 'function') ? ch(gx, gy, dx, dy) : ch;
       setCell(layer, gx, gy, brightness, cellCh);
     }
   }
@@ -493,10 +453,10 @@
 
     const W = innerWidth, H = innerHeight;
     const PAL = PALETTES[state.preset];
-    const sat = (key) => PAL[key].s[state.style] ?? PAL[key].s.current ?? 80;
+    const sat = (key) => PAL[key].s.proposed ?? PAL[key].s.current ?? 80;
 
     const wCell = state.worldCell;
-    const iCell = state.style === 'current' ? state.worldCell : state.instCell;
+    const iCell = state.instCell;
 
     ctx.fillStyle = 'rgba(2, 3, 10, 1)';
     ctx.fillRect(0, 0, W, H);
@@ -546,85 +506,65 @@
       const radius = Math.min(W, H) * 0.5;
       const drift = state.t * 0.01;
 
-      if (state.style === 'proposed') {
-        // Filled disc with sphere-projected surface coordinates so the
-        // planet actually rotates: surface features advance in longitude
-        // over time, compress near the limb, and lighting stays fixed in
-        // screen space (light source doesn't move with the planet).
-        //
-        //   screen point (dx, dy) on disc, normalised to (nx, ny).
-        //   latitude  = asin(ny)
-        //   longitude_visible = asin(nx / cos(latitude))   [near hemisphere]
-        //   longitude_surface = longitude_visible + driftLng(t)
-        //
-        // The drift adds rotation about the spin axis (vertical screen
-        // axis ≈ planet's pole here). Both noise and glyph lookups use
-        // (latitude, longitude_surface) so features move with the spin.
-        const cell = lPlanet.cell;
-        const cxc = cx / cell, cyc = cy / cell, rc = radius / cell;
-        const driftLng = state.t * 0.18;            // ~35 sec per full rotation
-        for (let gy = Math.floor(cyc - rc - 1); gy <= Math.ceil(cyc + 1); gy++) {
-          for (let gx = Math.floor(cxc - rc - 1); gx <= Math.ceil(cxc + rc + 1); gx++) {
-            const dx = gx - cxc, dy = gy - cyc;
-            const d = Math.hypot(dx, dy);
-            if (d > rc) continue;
-            // Upper hemisphere only (cy is below screen, so dy < 0 = above).
-            if (dy > 0) continue;
-            const nx = dx / rc, ny = dy / rc;
-            // Lighting — fixed in screen space (light doesn't rotate).
-            const light = 0.6 * nx - 0.8 * ny;
-            // Sphere projection.
-            const lat = Math.asin(Math.max(-1, Math.min(1, ny)));
-            const cosLat = Math.cos(lat);
-            if (cosLat < 0.04) continue;             // skip the poles
-            const lonArg = nx / cosLat;
-            if (Math.abs(lonArg) > 1) continue;      // outside visible hemisphere
-            const lonVis = Math.asin(lonArg);
-            const lon = lonVis + driftLng;           // surface longitude — rotates
-            // Continuous-globe noise: continents move with longitude.
-            const noise = (Math.sin(lon * 4.5) + Math.cos(lat * 6)
-                         + Math.sin((lon - lat) * 3.5)) / 3;
-            const isAccent = noise > 0.18;
-            const edge = Math.min(1, (rc - d) / 1.2);
-            const v = Math.max(0, Math.min(1,
-              0.45 + light * 0.32 + noise * 0.14)) * edge;
-            if (v < 0.18) continue;
-            // Glyph keyed to surface coords — character at a screen cell
-            // changes as the surface rotates beneath it.
-            const hashLon = Math.round(lon * 6);
-            const hashLat = Math.round(lat * 9);
-            const ch = pPick(hashLon, hashLat, 13, G.planetBody);
-            setCell(isAccent ? lPlanetAcc : lPlanet, gx, gy, v, ch);
-          }
+      // Filled disc with sphere-projected surface coordinates so the
+      // planet actually rotates: surface features advance in longitude
+      // over time, compress near the limb, and lighting stays fixed in
+      // screen space (light source doesn't move with the planet).
+      //
+      //   screen point (dx, dy) on disc, normalised to (nx, ny).
+      //   latitude  = asin(ny)
+      //   longitude_visible = asin(nx / cos(latitude))   [near hemisphere]
+      //   longitude_surface = longitude_visible + driftLng(t)
+      //
+      // The drift adds rotation about the spin axis (vertical screen
+      // axis ≈ planet's pole here). Both noise and glyph lookups use
+      // (latitude, longitude_surface) so features move with the spin.
+      const cell = lPlanet.cell;
+      const cxc = cx / cell, cyc = cy / cell, rc = radius / cell;
+      const driftLng = state.t * 0.18;            // ~35 sec per full rotation
+      for (let gy = Math.floor(cyc - rc - 1); gy <= Math.ceil(cyc + 1); gy++) {
+        for (let gx = Math.floor(cxc - rc - 1); gx <= Math.ceil(cxc + rc + 1); gx++) {
+          const dx = gx - cxc, dy = gy - cyc;
+          const d = Math.hypot(dx, dy);
+          if (d > rc) continue;
+          // Upper hemisphere only (cy is below screen, so dy < 0 = above).
+          if (dy > 0) continue;
+          const nx = dx / rc, ny = dy / rc;
+          // Lighting — fixed in screen space (light doesn't rotate).
+          const light = 0.6 * nx - 0.8 * ny;
+          // Sphere projection.
+          const lat = Math.asin(Math.max(-1, Math.min(1, ny)));
+          const cosLat = Math.cos(lat);
+          if (cosLat < 0.04) continue;             // skip the poles
+          const lonArg = nx / cosLat;
+          if (Math.abs(lonArg) > 1) continue;      // outside visible hemisphere
+          const lonVis = Math.asin(lonArg);
+          const lon = lonVis + driftLng;           // surface longitude — rotates
+          // Continuous-globe noise: continents move with longitude.
+          const noise = (Math.sin(lon * 4.5) + Math.cos(lat * 6)
+                       + Math.sin((lon - lat) * 3.5)) / 3;
+          const isAccent = noise > 0.18;
+          const edge = Math.min(1, (rc - d) / 1.2);
+          const v = Math.max(0, Math.min(1,
+            0.45 + light * 0.32 + noise * 0.14)) * edge;
+          if (v < 0.18) continue;
+          // Glyph keyed to surface coords — character at a screen cell
+          // changes as the surface rotates beneath it.
+          const hashLon = Math.round(lon * 6);
+          const hashLat = Math.round(lat * 9);
+          const ch = pPick(hashLon, hashLat, 13, G.planetBody);
+          setCell(isAccent ? lPlanetAcc : lPlanet, gx, gy, v, ch);
         }
-        // Bright limb edge — silhouette doesn't rotate; only the inside does.
-        // Tiny apparent drift kept for camera-roll feel.
-        for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.15; a += 0.006) {
-          const x = cx + Math.cos(a + drift) * radius;
-          const y = cy + Math.sin(a + drift) * radius;
-          const gx = Math.round(x / lPlanet.cell), gy = Math.round(y / lPlanet.cell);
-          const tx = -Math.sin(a + drift), ty = Math.cos(a + drift);
-          const ch = slopeCharVaried(tx, ty, gx, gy, 21);
-          setCell(lPlanet, gx, gy, 0.9, ch);
-        }
-      } else {
-        // Current style: original arc-only treatment.
-        for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.15; a += 0.008) {
-          const x = cx + Math.cos(a + drift) * radius;
-          const y = cy + Math.sin(a + drift) * radius;
-          const gx = Math.round(x / lPlanet.cell), gy = Math.round(y / lPlanet.cell);
-          setCell(lPlanet, gx, gy, 0.85, null);
-        }
-        for (let m = 0; m < 3; m++) {
-          const phase = (m / 3) * Math.PI * 0.6 + 0.3;
-          for (let a = -Math.PI * 0.78; a <= -Math.PI * 0.25; a += 0.02) {
-            const r2 = radius * (0.92 - m * 0.08);
-            const x = cx + Math.cos(a + drift) * r2 * Math.cos(phase);
-            const y = cy + Math.sin(a + drift) * r2;
-            const gx = Math.round(x / lPlanet.cell), gy = Math.round(y / lPlanet.cell);
-            setCell(lPlanet, gx, gy, 0.45, null);
-          }
-        }
+      }
+      // Bright limb edge — silhouette doesn't rotate; only the inside does.
+      // Tiny apparent drift kept for camera-roll feel.
+      for (let a = -Math.PI * 0.85; a <= -Math.PI * 0.15; a += 0.006) {
+        const x = cx + Math.cos(a + drift) * radius;
+        const y = cy + Math.sin(a + drift) * radius;
+        const gx = Math.round(x / lPlanet.cell), gy = Math.round(y / lPlanet.cell);
+        const tx = -Math.sin(a + drift), ty = Math.cos(a + drift);
+        const ch = slopeCharVaried(tx, ty, gx, gy, 21);
+        setCell(lPlanet, gx, gy, 0.9, ch);
       }
     }
 
@@ -721,38 +661,26 @@
       const ccx = (W / 2) / cell;
       const ccy = (H * 0.42) / cell;
 
-      if (state.style === 'proposed') {
-        // Faint center dot — the actual aim point.
-        plotPoint(lFrame, Math.round(ccx), Math.round(ccy), 0.55, '·');
-        // Inner ring at radius 2 cells.
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
-          const px = ccx + Math.cos(a) * 2;
-          const py = ccy + Math.sin(a) * 2;
-          const tx = -Math.sin(a), ty = Math.cos(a);
-          plotPoint(lFrame, Math.round(px), Math.round(py), 0.85,
-                    slopeCharVaried(tx, ty, Math.round(px), Math.round(py), 51));
-        }
-        // Outer ring at radius 4 cells, sparser.
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
-          const px = ccx + Math.cos(a) * 4;
-          const py = ccy + Math.sin(a) * 4;
-          const tx = -Math.sin(a), ty = Math.cos(a);
-          plotPoint(lFrame, Math.round(px), Math.round(py), 0.7,
-                    slopeCharVaried(tx, ty, Math.round(px), Math.round(py), 53));
-        }
-        // Cardinal ticks just outside the outer ring (brighter).
-        plotPoint(lFrame, Math.round(ccx + 5), Math.round(ccy),     0.95, '─');
-        plotPoint(lFrame, Math.round(ccx - 5), Math.round(ccy),     0.95, '─');
-        plotPoint(lFrame, Math.round(ccx),     Math.round(ccy + 5), 0.95, '│');
-        plotPoint(lFrame, Math.round(ccx),     Math.round(ccy - 5), 0.95, '│');
-      } else {
-        // Current: simple + with gap.
-        const arm = 1.6, gap = 0.5;
-        plotLine(lFrame, ccx - arm - gap, ccy, ccx - gap, ccy, 0.95, '─');
-        plotLine(lFrame, ccx + gap, ccy, ccx + arm + gap, ccy, 0.95, '─');
-        plotLine(lFrame, ccx, ccy - arm - gap, ccx, ccy - gap, 0.95, '│');
-        plotLine(lFrame, ccx, ccy + gap, ccx, ccy + arm + gap, 0.95, '│');
+      // Concentric reticle — modern targeting feel.
+      plotPoint(lFrame, Math.round(ccx), Math.round(ccy), 0.55, '·');
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 8) {
+        const px = ccx + Math.cos(a) * 2;
+        const py = ccy + Math.sin(a) * 2;
+        const tx = -Math.sin(a), ty = Math.cos(a);
+        plotPoint(lFrame, Math.round(px), Math.round(py), 0.85,
+                  slopeCharVaried(tx, ty, Math.round(px), Math.round(py), 51));
       }
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 12) {
+        const px = ccx + Math.cos(a) * 4;
+        const py = ccy + Math.sin(a) * 4;
+        const tx = -Math.sin(a), ty = Math.cos(a);
+        plotPoint(lFrame, Math.round(px), Math.round(py), 0.7,
+                  slopeCharVaried(tx, ty, Math.round(px), Math.round(py), 53));
+      }
+      plotPoint(lFrame, Math.round(ccx + 5), Math.round(ccy),     0.95, '─');
+      plotPoint(lFrame, Math.round(ccx - 5), Math.round(ccy),     0.95, '─');
+      plotPoint(lFrame, Math.round(ccx),     Math.round(ccy + 5), 0.95, '│');
+      plotPoint(lFrame, Math.round(ccx),     Math.round(ccy - 5), 0.95, '│');
     }
 
     /* ============================================================
@@ -774,12 +702,10 @@
       plotLine(lFrame, trx/cell, try_/cell, brx/cell, bry/cell, 0.7,
                (gx, gy, dx, dy) => slopeCharVaried(dx, dy, gx, gy, 93));
 
-      if (state.style === 'proposed') {
-        plotPoint(lFrame, Math.round(tlx/cell), Math.round(tly/cell), 0.95, '┌');
-        plotPoint(lFrame, Math.round(trx/cell), Math.round(try_/cell), 0.95, '┐');
-        plotPoint(lFrame, Math.round(blx/cell), Math.round(bly/cell), 0.85, '└');
-        plotPoint(lFrame, Math.round(brx/cell), Math.round(bry/cell), 0.85, '┘');
-      }
+      plotPoint(lFrame, Math.round(tlx/cell), Math.round(tly/cell), 0.95, '┌');
+      plotPoint(lFrame, Math.round(trx/cell), Math.round(try_/cell), 0.95, '┐');
+      plotPoint(lFrame, Math.round(blx/cell), Math.round(bly/cell), 0.85, '└');
+      plotPoint(lFrame, Math.round(brx/cell), Math.round(bry/cell), 0.85, '┘');
     }
 
     /* ============================================================
@@ -796,10 +722,8 @@
        ============================================================ */
     {
       const cell = lDash.cell;
-      // Proposed = compact dashboard (~20% of H), smaller scanner, slightly
-      // bigger disks relative to the smaller frame. Current = original.
-      const proposed = state.style === 'proposed';
-      const dashTop = H * (proposed ? 0.80 : 0.72);
+      // Compact dashboard — ~20% of screen height.
+      const dashTop = H * 0.80;
       const dashBottom = H - 8;
       const dashH = dashBottom - dashTop;
 
@@ -810,10 +734,10 @@
         (gx, gy) => pPick(gx, gy, 101, ['─','═','=','─']));
 
       const rcx = W * 0.5;
-      const rcy = dashTop + dashH * (proposed ? 0.50 : 0.55);
-      const rw = W * (proposed ? 0.07 : 0.13);
-      const rh = dashH * (proposed ? 0.40 : 0.32);
-      const diskR = dashH * (proposed ? 0.42 : 0.34);
+      const rcy = dashTop + dashH * 0.50;
+      const rw = W * 0.07;
+      const rh = dashH * 0.40;
+      const diskR = dashH * 0.42;
 
       /* ---- center scanner ---- */
       // Outer ellipse
@@ -839,11 +763,9 @@
       }
       plotLine(lDash, (rcx - rw)/cell, rcy/cell, (rcx + rw)/cell, rcy/cell, 0.5, '─');
 
-      /* ---- radar sweep — fading trail ---- */
+      /* ---- radar sweep — leading line + perimeter trail ---- */
       const sweepAngle = state.t * 0.55;       // ~11 sec per rotation
-      if (proposed) {
-        // One bright leading line + short fading arc along the perimeter.
-        // Avoids the "fan of separate lines" artifact at 12/6 o'clock.
+      {
         const sweepEX = rcx + Math.cos(sweepAngle) * rw;
         const sweepEY = rcy + Math.sin(sweepAngle) * rh;
         plotLine(lDash, rcx/cell, rcy/cell, sweepEX/cell, sweepEY/cell, 0.95,
@@ -864,17 +786,6 @@
           }
           prevTrail = [x, y];
         }
-      } else {
-        // Original 7-radial fading fan.
-        for (let i = 0; i < 7; i++) {
-          const a = sweepAngle - i * 0.07;
-          const ex = rcx + Math.cos(a) * rw;
-          const ey = rcy + Math.sin(a) * rh;
-          const v = Math.max(0, 0.95 - i * 0.13);
-          if (v < 0.1) continue;
-          plotLine(lDash, rcx/cell, rcy/cell, ex/cell, ey/cell, v,
-                   (gx, gy, dx, dy) => slopeCharVaried(dx, dy, gx, gy, 119 + i));
-        }
       }
 
       /* ---- radar blip (the Cobra) — synced to the hover position
@@ -887,10 +798,9 @@
       const blipY = rcy + (shipScannerZ + 2) * rh * 0.4;
       const stalkLen = -shipScannerY * dashH * 0.45;
       plotLine(lDash, blipX/cell, blipY/cell, blipX/cell, (blipY + stalkLen)/cell, 0.95, '│');
-      const blipCh = state.style === 'proposed' ? '◆' : null;
-      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell), 1.0, blipCh);
-      plotPoint(lDash, Math.round(blipX/cell)+1, Math.round((blipY + stalkLen)/cell), 1.0, blipCh);
-      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell)+1, 1.0, blipCh);
+      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell), 1.0, '◆');
+      plotPoint(lDash, Math.round(blipX/cell)+1, Math.round((blipY + stalkLen)/cell), 1.0, '◆');
+      plotPoint(lDash, Math.round(blipX/cell), Math.round((blipY + stalkLen)/cell)+1, 1.0, '◆');
 
       /* ---- left holo-disk: target zone (amber) ---- */
       const tdcx = rcx - rw - W * 0.06 - diskR;
@@ -915,26 +825,15 @@
           Math.round((tdcx + dx * diskR) / cell),
           Math.round((tdcy + dy * diskR) / cell), 0.95, ch);
       }
-      if (proposed) {
-        // Empty target reticle — small inner ring + center "+". Means
-        // "no target locked." When v0.2 lands targeting this becomes
-        // the actual target wireframe + range readout.
-        for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
-          const px = tdcx/cell + Math.cos(a) * 1.5;
-          const py = tdcy/cell + Math.sin(a) * 1.5;
-          plotPoint(lDash, Math.round(px), Math.round(py), 0.55,
-                    slopeCharVaried(-Math.sin(a), Math.cos(a), Math.round(px), Math.round(py), 137));
-        }
-        plotPoint(lDash, Math.round(tdcx/cell), Math.round(tdcy/cell), 0.65, '+');
-      } else {
-        // Original pulsing diamond + bracket cluster (current style).
-        const pulse = 0.7 + 0.3 * Math.sin(state.t * 4);
-        plotPoint(lDash, Math.round(tdcx/cell), Math.round(tdcy/cell), pulse, null);
-        plotPoint(lDash, Math.round(tdcx/cell) + 2, Math.round(tdcy/cell), pulse * 0.7, null);
-        plotPoint(lDash, Math.round(tdcx/cell) - 2, Math.round(tdcy/cell), pulse * 0.7, null);
-        plotPoint(lDash, Math.round(tdcx/cell), Math.round(tdcy/cell) - 2, pulse * 0.7, null);
-        plotPoint(lDash, Math.round(tdcx/cell), Math.round(tdcy/cell) + 2, pulse * 0.7, null);
+      // Empty target reticle — small inner ring + center "+". When v0.2
+      // lands targeting, this becomes the actual target wireframe + range.
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+        const px = tdcx/cell + Math.cos(a) * 1.5;
+        const py = tdcy/cell + Math.sin(a) * 1.5;
+        plotPoint(lDash, Math.round(px), Math.round(py), 0.55,
+                  slopeCharVaried(-Math.sin(a), Math.cos(a), Math.round(px), Math.round(py), 137));
       }
+      plotPoint(lDash, Math.round(tdcx/cell), Math.round(tdcy/cell), 0.65, '+');
 
       /* ---- right holo-disk: status zone (cyan) ----
          Three concentric arcs: outer = hull, middle = shields, inner = fuel.
@@ -962,53 +861,32 @@
       const hullPct   = 0.92 + Math.sin(state.t * 0.4) * 0.03;
       const shieldPct = 0.78 + Math.sin(state.t * 0.6 + 1) * 0.06;
       const fuelPct   = Math.max(0, 0.55 - state.t * 0.0006);
-      if (proposed) {
-        // Three labeled stacked horizontal bars inside the disk —
-        // readable at a glance. (Concentric arcs were hard to interpret
-        // in combat.)
-        const sBars = [
-          { label: 'HUL', val: hullPct },
-          { label: 'SHD', val: shieldPct },
-          { label: 'FUL', val: fuelPct },
-        ];
-        const sBarW = diskR * 1.2;
-        const sBarH = 6;
-        const sBarRowH = 14;
-        const sBarLeftX = sdcx - sBarW / 2 + 18;
-        const sBarTopY = sdcy - (sBars.length * sBarRowH) / 2 + 4;
-        for (let i = 0; i < sBars.length; i++) {
-          const b = sBars[i];
-          const by = sBarTopY + i * sBarRowH;
-          plotLine(lStatus, sBarLeftX/cell, by/cell, (sBarLeftX + sBarW - 18)/cell, by/cell, 0.55, '─');
-          plotLine(lStatus, sBarLeftX/cell, (by + sBarH)/cell, (sBarLeftX + sBarW - 18)/cell, (by + sBarH)/cell, 0.55, '─');
-          const fillW = (sBarW - 18) * Math.max(0, Math.min(1, b.val));
-          plotLine(lStatus, sBarLeftX/cell, (by + sBarH/2)/cell, (sBarLeftX + fillW)/cell, (by + sBarH/2)/cell, 0.95, blockChar(b.val));
-        }
-        window.__sBars = sBars.map((b, i) => ({
-          label: b.label, val: b.val,
-          x: sBarLeftX - 10,
-          y: sBarTopY + i * sBarRowH + sBarH / 2,
-        }));
-      } else {
-        // Original concentric arcs (current style).
-        function drawArc(layer, cx, cy, r, fillFrac, brightness) {
-          const start = -Math.PI / 2;
-          const end = start + Math.max(0, Math.min(1, fillFrac)) * Math.PI * 2;
-          let p = null;
-          for (let a = start; a <= end; a += 0.04) {
-            const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-            if (p) {
-              plotLine(layer, p[0]/cell, p[1]/cell, x/cell, y/cell, brightness,
-                       (gx, gy, dx, dy) => slopeCharVaried(dx, dy, gx, gy, 151));
-            }
-            p = [x, y];
-          }
-        }
-        drawArc(lStatus, sdcx, sdcy, diskR * 0.85, hullPct,   0.95);
-        drawArc(lStatus, sdcx, sdcy, diskR * 0.62, shieldPct, 0.85);
-        drawArc(lStatus, sdcx, sdcy, diskR * 0.40, fuelPct,   0.75);
-        window.__sBars = null;
+      // Three labeled stacked horizontal bars inside the disk — readable
+      // at a glance. Replaces the concentric-arcs treatment that was hard
+      // to interpret in combat.
+      const sBars = [
+        { label: 'HUL', val: hullPct },
+        { label: 'SHD', val: shieldPct },
+        { label: 'FUL', val: fuelPct },
+      ];
+      const sBarW = diskR * 1.2;
+      const sBarH = 6;
+      const sBarRowH = 14;
+      const sBarLeftX = sdcx - sBarW / 2 + 18;
+      const sBarTopY = sdcy - (sBars.length * sBarRowH) / 2 + 4;
+      for (let i = 0; i < sBars.length; i++) {
+        const b = sBars[i];
+        const by = sBarTopY + i * sBarRowH;
+        plotLine(lStatus, sBarLeftX/cell, by/cell, (sBarLeftX + sBarW - 18)/cell, by/cell, 0.55, '─');
+        plotLine(lStatus, sBarLeftX/cell, (by + sBarH)/cell, (sBarLeftX + sBarW - 18)/cell, (by + sBarH)/cell, 0.55, '─');
+        const fillW = (sBarW - 18) * Math.max(0, Math.min(1, b.val));
+        plotLine(lStatus, sBarLeftX/cell, (by + sBarH/2)/cell, (sBarLeftX + fillW)/cell, (by + sBarH/2)/cell, 0.95, blockChar(b.val));
       }
+      window.__sBars = sBars.map((b, i) => ({
+        label: b.label, val: b.val,
+        x: sBarLeftX - 10,
+        y: sBarTopY + i * sBarRowH + sBarH / 2,
+      }));
 
       // Stash disk centers + radius for HUD label placement below.
       window.__diskTgt = { cx: tdcx, cy: tdcy, r: diskR };
@@ -1039,7 +917,7 @@
                  (b.x + barW)/cell, (barY + barH)/cell, 0.55, '─');
         // Fill row (middle line).
         const fillW = barW * Math.max(0, Math.min(1, b.val));
-        const fillCh = state.style === 'proposed' ? blockChar(b.val) : null;
+        const fillCh = blockChar(b.val);
         plotLine(lDash, b.x/cell, (barY + barH/2)/cell,
                  (b.x + fillW)/cell, (barY + barH/2)/cell, 0.95, fillCh);
       }
@@ -1145,7 +1023,7 @@
     // ship is visible only through the canopy, not on the dashboard.
     renderGroup([lHull, lHullAcc], iCell);
     // Mask the cockpit body so instruments don't fight the world for legibility.
-    if (state.style === 'proposed') drawCockpitMask();
+    drawCockpitMask();
     // Instrument group renders on top of the mask. Status disk has its
     // own cyan layer so the multi-zone color split doesn't muddy via
     // the brightest-wins compositor.
@@ -1168,25 +1046,10 @@
 
     // Disk labels (placed below each holo-disk).
     if (window.__diskTgt) {
-      // In proposed mode: empty target reticle so the caption is "NO TGT".
-      // SYSTEMS labels move from tabular readouts to inline labels next to
-      // the new stacked bars (rendered separately below).
-      const proposedHud = state.style === 'proposed';
-      glowText(proposedHud ? 'NO TGT' : 'TARGET',
-               window.__diskTgt.cx, window.__diskTgt.cy + window.__diskTgt.r + 14, 'dash',   10);
-      glowText('SYS', window.__diskSt.cx,  window.__diskSt.cy  + window.__diskSt.r  + 14, 'status', 10);
-      const sd = window.__diskSt;
-      if (!proposedHud) {
-        // Current style: tabular HUL/SHD/FUL beside the disk + RNG/VEL.
-        glowText('HUL  92%', sd.cx, sd.cy + sd.r + 30, 'status', 9, '400');
-        glowText('SHD  78%', sd.cx, sd.cy + sd.r + 42, 'status', 9, '400');
-        glowText('FUL  55%', sd.cx, sd.cy + sd.r + 54, 'status', 9, '400');
-        const td = window.__diskTgt;
-        glowText('RNG 1.4 km', td.cx, td.cy + td.r + 30, 'dash', 9, '400');
-        glowText('VEL 38 m/s', td.cx, td.cy + td.r + 42, 'dash', 9, '400');
-      }
+      glowText('NO TGT', window.__diskTgt.cx, window.__diskTgt.cy + window.__diskTgt.r + 14, 'dash',   10);
+      glowText('SYS',    window.__diskSt.cx,  window.__diskSt.cy  + window.__diskSt.r  + 14, 'status', 10);
     }
-    // Proposed-mode stacked-bar labels next to each row inside the SYSTEMS disk.
+    // Stacked-bar labels next to each row inside the SYSTEMS disk.
     if (window.__sBars) {
       for (const b of window.__sBars) {
         glowText(b.label, b.x - 4, b.y, 'status', 8, '500');
@@ -1200,9 +1063,7 @@
                  b.x + b.w / 2, b.valueY, 'dash', 8, '400');
       }
     }
-    glowText(state.style === 'proposed'
-      ? `PROPOSED · world ${wCell}px / inst ${iCell}px · per-layer glyphs · filled planet · vivid sat`
-      : `CURRENT · single ${wCell}px scale · brightness ramp picks the glyph`,
+    glowText(`world ${wCell}px / inst ${iCell}px · per-layer glyphs · filled planet · vivid sat`,
       W / 2, H - 10, 'frame', 9, '400');
 
     requestAnimationFrame(frame);
