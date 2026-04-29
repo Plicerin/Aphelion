@@ -3265,10 +3265,16 @@ function renderFlight(state, theme, dt){
   // ship should glow much wider than the wireframe ever does. Drawn
   // at instrument scale so each burst pixel is small enough that a
   // ring made of them still reads as a ring, not a blob.
-  const lExplosion = makeFlightLayer('explosion', resolveColor(theme.hues.warn),     iCell, iCols, iRows, 1.6, 'atmospheric');
-  const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows, 1.0, 'tight');
-  const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows, 1.0, 'tight');
-  const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows, 1.0, 'tight');
+  const lExplosion   = makeFlightLayer('explosion',   resolveColor(theme.hues.warn),   iCell, iCols, iRows, 1.6, 'atmospheric');
+  const lFrame       = makeFlightLayer('frame',       resolveColor(theme.hues.frame),  iCell, iCols, iRows, 1.0, 'tight');
+  const lDash        = makeFlightLayer('dash',        resolveColor(theme.hues.dash),   iCell, iCols, iRows, 1.0, 'tight');
+  const lStatus      = makeFlightLayer('status',      resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows, 1.0, 'tight');
+  // Radar blips: hostile (pirates) and friend (police + traders)
+  // get distinct hues so the player can tell threats from non-threats
+  // at a glance. Tight bloom so the blips stay sharp on the small
+  // scanner ellipse instead of bleeding into one another.
+  const lBlipHostile = makeFlightLayer('blipHostile', resolveColor(theme.hues.warn),   iCell, iCols, iRows, 1.0, 'tight');
+  const lBlipFriend  = makeFlightLayer('blipFriend',  resolveColor(theme.hues.status || theme.hues.system), iCell, iCols, iRows, 1.0, 'tight');
 
   /* ---- Planet occluder (computed up-front so subsequent layers can
      skip cells that fall behind the planet's silhouette). ----
@@ -3693,6 +3699,7 @@ function renderFlight(state, theme, dt){
         if(screenDist < 60 && (!_activeTarget || range < _activeTarget.range)){
           _activeTarget = {
             ship: WRAITH_BLUEPRINT,
+            npc,              // reference to current-frame npc (for live hp readout)
             range,
             closing: vDot,    // positive = approaching
             screenX: cpx, screenY: cpy,
@@ -3861,6 +3868,45 @@ function renderFlight(state, theme, dt){
     prevTrail = [x, y];
   }
 
+  // Radar blips. Project each non-exploding NPC onto the scanner
+  // ellipse based on its bearing in the player-local frame: forward
+  // is up on the disk, right is right. NPCs inside SCANNER_RANGE map
+  // linearly to the ellipse interior; ones beyond pin to the
+  // ellipse edge as a direction arrow so the player can still tell
+  // which way the contact is. Pirates render on the hostile (warn)
+  // layer; police and traders share the friend (status) layer.
+  if(systemBodies && systemBodies.npcs && systemBodies.npcs.length){
+    const SCANNER_RANGE = 100;
+    for(const npc of systemBodies.npcs){
+      if(npc.explodingT > 0) continue;
+      const wx = npc.position[0] - state.ship.position[0];
+      const wy = npc.position[1] - state.ship.position[1];
+      const wz = npc.position[2] - state.ship.position[2];
+      const local = qRotate(invOrient, [wx, wy, wz]);
+      const bx = local[0];
+      const bz = local[2];
+      const dist = Math.hypot(bx, bz);
+      if(dist < 0.001) continue;
+      const inRange = dist <= SCANNER_RANGE;
+      let dispX, dispY;
+      if(inRange){
+        // forward (positive z) goes UP on disk (negative screen y).
+        dispX = rcx + (bx / SCANNER_RANGE) * rw;
+        dispY = rcy - (bz / SCANNER_RANGE) * rh;
+      } else {
+        // Pin to the ellipse edge in the bearing direction.
+        const nx = bx / dist;
+        const nz = bz / dist;
+        dispX = rcx + nx * rw;
+        dispY = rcy - nz * rh;
+      }
+      const layer  = npc.role === 'pirate' ? lBlipHostile : lBlipFriend;
+      const ch     = inRange ? '*' : '·';
+      const v      = inRange ? 0.95 : 0.55;
+      instSet(layer, Math.round(dispX/iCell), Math.round(dispY/iCell), v, ch);
+    }
+  }
+
   // Left holo-disk (TARGET, amber)
   const tdcx = rcx - rw - W * 0.06 - diskR;
   const tdcy = rcy;
@@ -3878,15 +3924,49 @@ function renderFlight(state, theme, dt){
   instSet(lDash, Math.round((tdcx - diskR*1.15)/iCell), Math.round(tdcy/iCell), 0.95, '─');
   instSet(lDash, Math.round(tdcx/iCell), Math.round((tdcy + diskR*1.15)/iCell), 0.95, '│');
   instSet(lDash, Math.round(tdcx/iCell), Math.round((tdcy - diskR*1.15)/iCell), 0.95, '│');
-  // Empty target reticle: small inner ring + center dot. Means "no target
-  // locked" — when v0.2 lands target acquisition this becomes the actual
-  // target wireframe + range readout.
-  for(let a=0; a<Math.PI*2; a += Math.PI/4){
-    const px = tdcx + Math.cos(a) * 1.5 * iCell;
-    const py = tdcy + Math.sin(a) * 1.5 * iCell;
-    instSet(lDash, Math.round(px/iCell), Math.round(py/iCell), 0.55, slopeChar(-Math.sin(a), Math.cos(a)));
+  if(_activeTarget){
+    // Locked target — draw the blueprint as a small front-on
+    // wireframe centred in the disk, plus an HP bar below. Front-on
+    // projection: blueprint x/y straight onto the disk, ignore z so
+    // the silhouette reads the same regardless of where the target
+    // is in world space.
+    const ship = _activeTarget.ship;
+    const SCALE = diskR * 0.012;
+    for(const ed of ship.edges){
+      const v1 = ship.vertices[ed[0]];
+      const v2 = ship.vertices[ed[1]];
+      const x1 = tdcx + v1[0] * SCALE;
+      const y1 = tdcy - v1[1] * SCALE;
+      const x2 = tdcx + v2[0] * SCALE;
+      const y2 = tdcy - v2[1] * SCALE;
+      instLine(lDash, x1/iCell, y1/iCell, x2/iCell, y2/iCell, 0.85,
+               (gx, gy, dx, dy) => slopeChar(dx, dy));
+    }
+    // HP bar at the disk's bottom edge — empty outline + filled
+    // segment proportional to current hp. NPC_MAX_HP = 100 in the
+    // combat module; reading hp from the live npc reference means
+    // the bar drains in real time as the player fires.
+    const hpFrac = Math.max(0, Math.min(1, (_activeTarget.npc?.hp ?? 0) / NPC_MAX_HP));
+    const barW = diskR * 1.4;
+    const barX = tdcx - barW / 2;
+    const barY = tdcy + diskR * 0.85;
+    instLine(lDash, barX/iCell, barY/iCell, (barX + barW)/iCell, barY/iCell, 0.4, '─');
+    if(hpFrac > 0){
+      const fillW = barW * hpFrac;
+      // Critical HP (<25%) routes through the warn layer so the bar
+      // visibly turns hot when the kill is close.
+      const fillLayer = hpFrac < 0.25 ? lExplosion : lDash;
+      instLine(fillLayer, barX/iCell, barY/iCell, (barX + fillW)/iCell, barY/iCell, 0.95, '═');
+    }
+  } else {
+    // Empty reticle when nothing is locked: small inner ring + center dot.
+    for(let a=0; a<Math.PI*2; a += Math.PI/4){
+      const px = tdcx + Math.cos(a) * 1.5 * iCell;
+      const py = tdcy + Math.sin(a) * 1.5 * iCell;
+      instSet(lDash, Math.round(px/iCell), Math.round(py/iCell), 0.55, slopeChar(-Math.sin(a), Math.cos(a)));
+    }
+    instSet(lDash, Math.round(tdcx/iCell), Math.round(tdcy/iCell), 0.65, '+');
   }
-  instSet(lDash, Math.round(tdcx/iCell), Math.round(tdcy/iCell), 0.65, '+');
 
   // Right holo-disk (SYSTEMS, cyan) — three concentric arcs (cosmetic for now).
   const sdcx = rcx + rw + W * 0.06 + diskR;
@@ -3987,7 +4067,7 @@ function renderFlight(state, theme, dt){
   ctx.fill('evenodd');
   ctx.restore();
 
-  renderLayers([lFrame, lDash, lStatus], iCell, iCols, iRows, W, H);
+  renderLayers([lFrame, lDash, lStatus, lBlipHostile, lBlipFriend], iCell, iCols, iRows, W, H);
 
   /* ---- HUD canvas labels (TGT / SYS / bar names) ----
      Drawn AFTER both renderLayers passes so the cockpit mask doesn't
