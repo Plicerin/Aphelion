@@ -1992,26 +1992,7 @@ function updateTargetFlyout(state){
   flyoutDistEl.textContent = formatDistance(state, chartLocked);
 
   // Jump-readiness: check fuel + mass-lock and reflect in the Engage button.
-  const cur = state.currentSystemSeed
-    ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
-    : null;
-  let ready = true;
-  let reason = null;
-  if(cur && cur !== chartLocked){
-    const ly = Math.hypot((chartLocked.x - cur.x) * 0.5, (chartLocked.y - cur.y) * 0.5);
-    if(!canJump(state.fuel ?? FUEL_MAX_LY, ly)){
-      ready = false;
-      reason = 'Insufficient fuel';
-    }
-    // Mass-lock: only check when bodies for the current system are on hand.
-    if(ready && systemBodies && systemBodiesSeed === state.currentSystemSeed.join(',')){
-      if(isMassLocked(state.ship.position,
-           [systemBodies.planet.pos, systemBodies.sun.pos])){
-        ready = false;
-        reason = 'Mass-locked — clear the planet';
-      }
-    }
-  }
+  const { ready, reason } = jumpReadiness(state, chartLocked);
   const jumpBtn = document.getElementById('target-flyout-jump');
   jumpBtn.disabled = !ready;
   jumpBtn.textContent = ready ? 'Engage Jump' : reason;
@@ -2118,6 +2099,29 @@ function buildSystemBodies(sys){
     anchor,
     npcs,
   };
+}
+
+/* Shared readiness check for hyperspace. Returns { ready, reason }.
+   Used by both the chart-flyout's Engage button (visual gating + reason
+   text) and startCountdown (so the keyboard Enter shortcut can't bypass
+   the gate and run the countdown to a silent rejection). */
+function jumpReadiness(state, target){
+  if(!target) return { ready: false, reason: 'No target' };
+  const cur = state.currentSystemSeed
+    ? findSystemBySeed(state.galaxies, state.currentSystemSeed)
+    : null;
+  if(!cur || cur === target) return { ready: true, reason: null };
+  const ly = Math.hypot((target.x - cur.x) * 0.5, (target.y - cur.y) * 0.5);
+  if(!canJump(state.fuel ?? FUEL_MAX_LY, ly)){
+    return { ready: false, reason: 'Insufficient fuel' };
+  }
+  if(systemBodies && systemBodiesSeed === state.currentSystemSeed.join(',')){
+    if(isMassLocked(state.ship.position,
+         [systemBodies.planet.pos, systemBodies.sun.pos])){
+      return { ready: false, reason: 'Mass-locked — clear the planet' };
+    }
+  }
+  return { ready: true, reason: null };
 }
 
 const FOV_FLIGHT = 380;
@@ -3583,6 +3587,12 @@ const countdownNumberEl = document.getElementById('countdown-number');
 
 function startCountdown(){
   if(!chartLocked || countdown) return;
+  // Readiness gate: same logic as the flyout's Engage button. Without
+  // this, pressing Enter while mass-locked or out of fuel would run a
+  // countdown to completion only to be silently rejected by the
+  // begin-hyperspace reducer, dumping the player back on the chart
+  // with no explanation.
+  if(!jumpReadiness(game, chartLocked).ready) return;
   countdown = { remaining: COUNTDOWN_SECONDS, target: chartLocked, lastShown: -1 };
   countdownTargetEl.textContent = chartLocked.name;
   document.getElementById('countdown-distance').textContent = formatDistance(game, chartLocked);
