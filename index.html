@@ -2197,11 +2197,15 @@ function jumpReadiness(state, target){
   if(!canJump(state.fuel ?? FUEL_MAX_LY, ly)){
     return { ready: false, reason: 'Insufficient fuel' };
   }
-  if(systemBodies && systemBodiesSeed === state.currentSystemSeed.join(',')){
-    if(isMassLocked(state.ship.position,
-         [systemBodies.planet.pos, systemBodies.sun.pos])){
-      return { ready: false, reason: 'Mass-locked — clear the planet' };
-    }
+  // Mass-lock — recompute fresh bodies so this check matches the reducer
+  // exactly. Don't rely on the module-scope `systemBodies` cache because
+  // it may be null (fresh page load with no flight render yet) or stale
+  // (still set from a previous system), which used to silently skip the
+  // check and cause "ready" to disagree with the reducer's verdict.
+  const bodies = buildSystemBodies(cur);
+  if(isMassLocked(state.ship.position,
+       [bodies.planet.pos, bodies.sun.pos])){
+    return { ready: false, reason: 'Mass-locked — clear the planet' };
   }
   return { ready: true, reason: null };
 }
@@ -3696,32 +3700,16 @@ function tickCountdown(dt){
   if(countdown.remaining <= 0){
     const target = countdown.target;
     cancelCountdown();
-    // Diagnostic log so we can see exactly what's happening if the
-    // jump still misbehaves. Removable once we're confident.
-    const cur = game.currentSystemSeed
-      ? findSystemBySeed(game.galaxies, game.currentSystemSeed)
-      : null;
-    const ly = cur ? Math.hypot((target.x-cur.x)*0.5, (target.y-cur.y)*0.5) : null;
-    const r = jumpReadiness(game, target);
-    console.log('[jump] countdown complete →', {
-      from: cur?.name, to: target.name, ly, fuel: game.fuel,
-      readyCheck: r,
-      shipPos: game.ship.position,
-    });
     dispatch({ type: 'select-system', seed: target.seed });
     const beforeScreen = game.screen;
     dispatch({ type: 'begin-hyperspace' });
-    console.log('[jump] after dispatch →', {
-      screenBefore: beforeScreen, screenAfter: game.screen,
-      selectedSystemSeed: game.selectedSystemSeed,
-      currentSystemSeed: game.currentSystemSeed,
-    });
     chartLocked = null;
-    // Defense in depth: if the dispatch failed (jumpReadiness should
-    // have caught it earlier, but in case there's a discrepancy) tell
-    // the player rather than silently dumping them on the chart.
+    // Defense in depth: if the dispatch was rejected, surface it to
+    // the player so we don't silently drop them on the chart. (The
+    // jumpReadiness gate in startCountdown should already have caught
+    // it; this is a backstop.)
     if(game.screen === beforeScreen){
-      console.warn('[jump] dispatch silently rejected — staying on chart. Reason:', r.reason);
+      const r = jumpReadiness(game, target);
       showJumpDenied(r.reason || 'Jump denied');
     }
     return;
