@@ -52,6 +52,41 @@
     will-change: filter;
   }
 
+  /* ============== WebGL diagnostics panel (cockpit only) ============== */
+  #webgl-diag {
+    position: fixed;
+    top: 14px; right: 14px;
+    z-index: 6;
+    background: var(--panel);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 10px;
+    font-family: inherit;
+    color: var(--ink);
+    max-width: 380px;
+    line-height: 1.45;
+  }
+  #webgl-diag .diag-title {
+    font-size: 9px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    margin-bottom: 6px;
+  }
+  #webgl-diag .diag-row {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 6px;
+    font-size: 10px;
+  }
+  #webgl-diag .diag-key   { color: var(--muted); }
+  #webgl-diag .diag-val   { color: var(--ink); word-break: break-all; }
+  #webgl-diag .diag-val.warn { color: var(--warn); }
+  #webgl-diag .diag-val.ok   { color: var(--accent); }
+
   /* ============== Title bar (shared across screens) ============== */
   #title {
     position: fixed;
@@ -1146,6 +1181,14 @@
     <div><span class="lbl">YAW</span> <span class="v" id="hYaw">0°</span></div>
     <div id="hMassLock" hidden><span class="v">⚠ MASS-LOCKED</span></div>
   </div>
+  <!-- WebGL diagnostics — cockpit only. Used to identify which GPU
+       backend the browser is using; ANGLE / SwiftShader fallback is
+       a known cause of bloom-postprocess failures. -->
+  <div id="webgl-diag" class="show-flight">
+    <div class="diag-title">WebGL · Bloom Diagnostics</div>
+    <div id="webgl-diag-rows"></div>
+  </div>
+
   <button id="open-chart-btn" class="show-flight" type="button">◤ Galactic Chart</button>
   <button id="close-chart-btn" class="show-chart" type="button">◤ Back to Flight</button>
 
@@ -1844,6 +1887,72 @@ function resize(){
 }
 addEventListener('resize', resize);
 resize();
+
+/**
+ * WebGL diagnostics — populates the cockpit-only #webgl-diag panel
+ * and logs the same values to the console. Helps identify when the
+ * browser is using a fallback GPU backend (ANGLE / SwiftShader /
+ * D3D9 / OpenGL Compatibility) which can silently break the WebGL
+ * bloom path even when getContext('webgl2') succeeds.
+ */
+(function probeWebGL(){
+  const probe = document.createElement('canvas');
+  let api = '2.0';
+  let gl = probe.getContext('webgl2');
+  if(!gl){ api = '1.0'; gl = probe.getContext('webgl'); }
+  if(!gl){
+    setDiag([
+      ['WebGL', 'unavailable', 'warn'],
+    ]);
+    console.warn('[Aphelion bloom-diag] WebGL context could not be created.');
+    return;
+  }
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const renderer  = gl.getParameter(gl.RENDERER);
+  const version   = gl.getParameter(gl.VERSION);
+  const shading   = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+  const unmaskedV = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)   : '(blocked)';
+  const unmaskedR = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : '(blocked)';
+  const extColor  = !!gl.getExtension('EXT_color_buffer_float');
+  const extLinear = !!gl.getExtension('OES_texture_float_linear');
+  const fbStatus  = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  const fbOK      = fbStatus === gl.FRAMEBUFFER_COMPLETE;
+
+  // Heuristic: if the unmasked renderer mentions SwiftShader or
+  // 'Software', flag with a warning colour. Same for clearly stale
+  // backends like D3D9.
+  const fallbackHints = /SwiftShader|Software|D3D9|Microsoft Basic|llvmpipe/i;
+  const looksFallback = fallbackHints.test(unmaskedR) || fallbackHints.test(renderer);
+
+  const rows = [
+    ['WebGL',                 api,                                      api === '2.0' ? 'ok' : 'warn'],
+    ['RENDERER',              renderer,                                 looksFallback ? 'warn' : ''],
+    ['VERSION',               version,                                  ''],
+    ['SHADING',               shading,                                  ''],
+    ['UNMASKED VENDOR',       String(unmaskedV),                        ''],
+    ['UNMASKED RENDERER',     String(unmaskedR),                        looksFallback ? 'warn' : 'ok'],
+    ['EXT_color_buffer_float', extColor ? 'yes' : 'no',                 extColor ? 'ok' : 'warn'],
+    ['OES_texture_float_linear', extLinear ? 'yes' : 'no',              extLinear ? 'ok' : 'warn'],
+    ['Framebuffer',           fbOK ? 'complete' : ('0x' + fbStatus.toString(16)), fbOK ? 'ok' : 'warn'],
+  ];
+  setDiag(rows);
+
+  console.log('[Aphelion bloom-diag] %o', Object.fromEntries(rows.map(r => [r[0], r[1]])));
+
+  function setDiag(rows){
+    const host = document.getElementById('webgl-diag-rows');
+    if(!host) return;
+    host.innerHTML = '';
+    for(const [k, v, cls] of rows){
+      const row = document.createElement('div');
+      row.className = 'diag-row';
+      const ke = document.createElement('span'); ke.className = 'diag-key'; ke.textContent = k;
+      const ve = document.createElement('span'); ve.className = 'diag-val' + (cls ? ' ' + cls : ''); ve.textContent = v;
+      row.appendChild(ke); row.appendChild(ve);
+      host.appendChild(row);
+    }
+  }
+})();
 
 /**
  * CSS-filter bloom postprocess.
