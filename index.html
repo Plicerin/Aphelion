@@ -1791,13 +1791,75 @@ const WRAITH_BLUEPRINT = {
     [ -20, -20, -10], [  20, -20, -10], [   0,   0, -40],
   ],
 };
+/* Per-government [pirate, police, trader] role weights. Mirrors the
+   table in src/sim/npc.ts. */
+const NPC_ROLE_WEIGHTS = {
+  'anarchy':          [0.70, 0.00, 0.30],
+  'feudal':           [0.50, 0.05, 0.45],
+  'multi-government': [0.30, 0.15, 0.55],
+  'dictatorship':     [0.30, 0.20, 0.50],
+  'communist':        [0.20, 0.30, 0.50],
+  'confederacy':      [0.15, 0.35, 0.50],
+  'democracy':        [0.10, 0.35, 0.55],
+  'corporate-state':  [0.05, 0.50, 0.45],
+};
+function _npcSeedSlotFloat(seed, slot, salt){
+  let h = ((seed[0] * 73856093) ^ (seed[1] * 19349663) ^ (seed[2] * 83492791)) >>> 0;
+  h = (Math.imul(h, 31) + slot) >>> 0;
+  h = (Math.imul(h, 31) + salt) >>> 0;
+  h = (Math.imul(h, 1664525) + 1013904223) >>> 0;
+  return h / 0x100000000;
+}
+function _pickNpcRole(roll, gov){
+  const w = NPC_ROLE_WEIGHTS[gov] || NPC_ROLE_WEIGHTS['democracy'];
+  if(roll < w[0]) return 'pirate';
+  if(roll < w[0] + w[1]) return 'police';
+  return 'trader';
+}
 function spawnNpcs(sys){
-  const seed = sys.seed;
-  const ox = (((seed[0] >> 4) & 0xff) - 128) * 0.40;
-  const oy = (((seed[1] >> 4) & 0xff) - 128) * 0.15;
-  const oz = 25 + ((seed[2] >> 0) & 0x3f);
-  const yaw = ((seed[0] & 0xff) / 256) * Math.PI * 2;
-  return [{ shipId: 'wraith', position: [ox, oy, oz], yaw }];
+  const { seed, government } = sys;
+  const count = 3 + Math.floor(_npcSeedSlotFloat(seed, 0, 0xc0) * 3);  // 3..5
+  const npcs = [];
+  for(let i = 0; i < count; i++){
+    const role = _pickNpcRole(_npcSeedSlotFloat(seed, i, 0xa1), government);
+    const ox  = (_npcSeedSlotFloat(seed, i, 0xb2) - 0.5) * 100;
+    const oy  = (_npcSeedSlotFloat(seed, i, 0xc3) - 0.5) * 30;
+    const oz  = 25 + _npcSeedSlotFloat(seed, i, 0xd4) * 65;
+    const yaw = _npcSeedSlotFloat(seed, i, 0xe5) * Math.PI * 2;
+    npcs.push({ shipId: 'wraith', role, position: [ox, oy, oz], yaw });
+  }
+  return npcs;
+}
+
+/* Pirate behaviour. Slower than the player so they're catchable. */
+const NPC_PIRATE_SPEED     = 8;
+const NPC_PIRATE_TURN_RATE = 0.6;
+const NPC_PIRATE_STAND_OFF = 8;
+function stepNpc(npc, playerPos, dt){
+  if(npc.role !== 'pirate') return npc;
+  const dx = playerPos[0] - npc.position[0];
+  const dz = playerPos[2] - npc.position[2];
+  const horizDist = Math.hypot(dx, dz);
+  if(horizDist < NPC_PIRATE_STAND_OFF) return npc;
+  const targetYaw = Math.atan2(dx, dz);
+  let yawErr = targetYaw - npc.yaw;
+  while(yawErr >  Math.PI) yawErr -= 2 * Math.PI;
+  while(yawErr < -Math.PI) yawErr += 2 * Math.PI;
+  const maxStep = NPC_PIRATE_TURN_RATE * dt;
+  const yawStep = Math.abs(yawErr) <= maxStep
+    ? yawErr
+    : Math.sign(yawErr) * maxStep;
+  let newYaw = npc.yaw + yawStep;
+  while(newYaw <  0)            newYaw += 2 * Math.PI;
+  while(newYaw >= 2 * Math.PI)  newYaw -= 2 * Math.PI;
+  const fx = Math.sin(newYaw);
+  const fz = Math.cos(newYaw);
+  const newPos = [
+    npc.position[0] + fx * NPC_PIRATE_SPEED * dt,
+    npc.position[1],
+    npc.position[2] + fz * NPC_PIRATE_SPEED * dt,
+  ];
+  return { ...npc, position: newPos, yaw: newYaw };
 }
 
 /* ===== 5b. Trade anchor =====
@@ -4583,6 +4645,11 @@ function frame(now){
   if(game.screen === 'flight'){
     const controls = sampleControls();
     game = { ...game, ship: stepShip(game.ship, controls, dt) };
+    // NPC behaviour tick — pirates pursue the player; traders and
+    // police are unchanged by stepNpc in this slice.
+    if(systemBodies && systemBodies.npcs){
+      systemBodies.npcs = systemBodies.npcs.map(n => stepNpc(n, game.ship.position, dt));
+    }
     // Docking timer — only meaningful when there's an anchor in this system.
     if(systemBodies && systemBodies.anchor){
       const newDT = updateDockingT(
