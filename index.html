@@ -2557,81 +2557,159 @@ const bloomDOM = (function(){
  * actually want them, fixing the radar-dish-blob problem that drove
  * the earlier atlas detour.
  */
-const _bloomBuckets = {};
-function getBloomBucket(name){
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.max(1, stage.width || Math.floor(innerWidth * dpr));
-  const h = Math.max(1, stage.height || Math.floor(innerHeight * dpr));
-  if(!_bloomBuckets[name] || _bloomBuckets[name].canvas.width !== w || _bloomBuckets[name].canvas.height !== h){
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const cx = c.getContext('2d');
-    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    _bloomBuckets[name] = { canvas: c, ctx: cx };
-  }
-  return _bloomBuckets[name];
-}
-
-const BLOOM_PROFILES = {
-  tight: [
-    { blur:  1, alpha: 0.65 },
-    { blur:  3, alpha: 0.50 },
-  ],
-  normal: [
-    { blur:  1, alpha: 0.65 },
-    { blur:  3, alpha: 0.55 },
-    { blur:  8, alpha: 0.45 },
-    { blur: 16, alpha: 0.30 },
-  ],
-  atmospheric: [
-    { blur:  1, alpha: 0.65 },
-    { blur:  3, alpha: 0.55 },
-    { blur:  8, alpha: 0.50 },
-    { blur: 24, alpha: 0.40 },
-    { blur: 56, alpha: 0.30 },
-  ],
-};
-
-// Glow-slider UI state. Profile selection is a global blur-radius
-// scale applied on top of the per-layer profiles — tight pinches
-// every halo inward, wide stretches every halo outward, normal
-// leaves them as profile-defined. Kept on the same object the UI
-// already binds to so the existing slider/picker code keeps working.
+/**
+ * Glow atlas — Effulgence-style baked tiles + per-cell tint.
+ *
+ * Each (char, cell, profile) tuple gets one neutral atlas tile baked
+ * in light gray (halo via stacked shadowBlur passes) plus a pure
+ * white hot core. At draw time the tile is copied into a scratch
+ * canvas, multiplied by the cell's hsl colour, then alpha-masked
+ * back to its original silhouette via destination-in. The tinted
+ * scratch is composited onto the main canvas with 'lighter', so
+ * overlapping halos stack additively — that's what fills the gaps
+ * between adjacent characters in a dense field.
+ *
+ * Why the multiply + destination-in dance: multiply against a
+ * solid-colour rect would set alpha to 1 across the whole tile,
+ * leaving a coloured square on the main canvas. destination-in
+ * restores the original alpha mask so only the glyph silhouette
+ * survives.
+ */
 const glyphAtlas = {
   profile: 'normal',
-  PROFILES: { tight: 0.55, normal: 1.0, wide: 1.5 },
-  setProfile(p){ if(this.PROFILES[p]) this.profile = p; },
-  clear(){ /* no per-glyph cache anymore — settings only */ },
+  PROFILES: {
+    tight:  [{ blur: 2,  alpha: 0.8 }, { blur: 6,  alpha: 0.5 }, { blur: 14, alpha: 0.3 }],
+    normal: [{ blur: 4,  alpha: 0.8 }, { blur: 12, alpha: 0.5 }, { blur: 28, alpha: 0.3 }],
+    wide:   [{ blur: 4,  alpha: 0.8 }, { blur: 12, alpha: 0.5 }, { blur: 28, alpha: 0.4 }, { blur: 60, alpha: 0.25 }],
+  },
+  PADDING: { tight: 20, normal: 40, wide: 80 },
+  cache: new Map(),
+  scratchCanvas: null,
+  scratchCtx: null,
+
+  setProfile(name){
+    if(this.PROFILES[name] && name !== this.profile){
+      this.profile = name;
+      // Tile padding changes with profile, so the scratch canvas has
+      // to resize and the cached tiles are no longer the right size.
+      this.cache.clear();
+    }
+  },
+  clear(){ this.cache.clear(); },
+
+  bakeTile(ch, cell, profile){
+    const passes = this.PROFILES[profile];
+    const padding = this.PADDING[profile];
+    const size = cell + padding * 2;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const cx = c.getContext('2d');
+    cx.font = `${cell - 1}px ui-monospace, "JetBrains Mono", monospace`;
+    cx.textBaseline = 'middle';
+    cx.textAlign = 'center';
+    const x = size / 2, y = size / 2;
+
+    // Halo bake — neutral light gray under 'lighter' compositing.
+    // Light gray (not pure white) so multiply-tinting deepens the
+    // outer falloff toward the tint colour, reading as neon.
+    cx.globalCompositeOperation = 'lighter';
+    cx.shadowColor = '#cccccc';
+    cx.fillStyle = '#cccccc';
+    for(const p of passes){
+      cx.shadowBlur = p.blur;
+      cx.globalAlpha = p.alpha;
+      cx.fillText(ch, x, y);
+    }
+    // Hot core — pure white, no shadow. Locks the centre near
+    // (1, 1, 1) so multiplying by any tint leaves it bright. Two
+    // passes for a sharper centre.
+    cx.shadowBlur = 0;
+    cx.shadowColor = 'transparent';
+    cx.globalAlpha = 1;
+    cx.fillStyle = '#ffffff';
+    cx.fillText(ch, x, y);
+    cx.globalAlpha = 0.7;
+    cx.fillText(ch, x, y);
+    cx.globalAlpha = 1;
+    cx.globalCompositeOperation = 'source-over';
+    return { canvas: c, padding };
+  },
+
+  getTile(ch, cell, profile){
+    const key = ch + '|' + cell + '|' + profile;
+    let tile = this.cache.get(key);
+    if(!tile){
+      tile = this.bakeTile(ch, cell, profile);
+      this.cache.set(key, tile);
+    }
+    return tile;
+  },
+
+  ensureScratch(size){
+    if(!this.scratchCanvas){
+      this.scratchCanvas = document.createElement('canvas');
+      this.scratchCtx = this.scratchCanvas.getContext('2d');
+    }
+    if(this.scratchCanvas.width !== size){
+      this.scratchCanvas.width = size;
+      this.scratchCanvas.height = size;
+    }
+  },
 };
 
 function renderLayers(layers, cell, cols, rows, W, H){
-  // Sharp character pass only. The glow halo lives in the WebGL
-  // bloom postprocess (bloomDOM.render in the main frame loop), which
-  // operates on the entire #stage canvas after this function returns.
-  // Keeping renderLayers focused on glyph placement makes the bloom
-  // input deterministic and the canvas-2D code easy to reason about.
-  ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'center';
+  const profile = glyphAtlas.profile;
+  // Use any tile to size the scratch canvas — all tiles for a given
+  // (cell, profile) share the same dimensions.
+  const sizingTile = glyphAtlas.getTile('M', cell, profile);
+  const tileSize = sizingTile.canvas.width;
+  glyphAtlas.ensureScratch(tileSize);
+  const tintCtx = glyphAtlas.scratchCtx;
+  const tintScratch = glyphAtlas.scratchCanvas;
 
-  for(let gy=0;gy<rows;gy++){
-    for(let gx=0;gx<cols;gx++){
-      const idx = gy*cols + gx;
+  for(let gy = 0; gy < rows; gy++){
+    for(let gx = 0; gx < cols; gx++){
+      const idx = gy * cols + gx;
+      // Pick the brightest layer at this cell.
       let bestV = 0, bestL = null;
       for(const L of layers){
         if(L.grid[idx] > bestV){ bestV = L.grid[idx]; bestL = L; }
       }
       if(bestV < 0.06 || !bestL) continue;
       const ch = (bestL.chars && bestL.chars[idx])
-        || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
+        || ramp[Math.min(ramp.length - 1, Math.floor(bestV * ramp.length))];
       const c = bestL.color;
       const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
       const hue = c.h + hueDelta;
-      const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-      ctx.fillStyle = `hsl(${hue}, ${c.s}%, ${light}%)`;
-      ctx.fillText(ch, gx*cell + cell/2, gy*cell + cell/2);
+      const light = Math.max(20, Math.min(95, c.l - 15 + bestV * 40));
+      const tintColor = `hsl(${hue}, ${c.s}%, ${light}%)`;
+      const tile = glyphAtlas.getTile(ch, cell, profile);
+
+      // Tint pipeline on the scratch canvas:
+      //   1. lay down the white tile (source-over)
+      //   2. multiply the cell's tint colour through it
+      //   3. re-apply the tile's alpha mask via destination-in so
+      //      the multiply doesn't leave a coloured square behind.
+      tintCtx.globalCompositeOperation = 'source-over';
+      tintCtx.clearRect(0, 0, tileSize, tileSize);
+      tintCtx.drawImage(tile.canvas, 0, 0);
+
+      tintCtx.globalCompositeOperation = 'multiply';
+      tintCtx.fillStyle = tintColor;
+      tintCtx.fillRect(0, 0, tileSize, tileSize);
+
+      tintCtx.globalCompositeOperation = 'destination-in';
+      tintCtx.drawImage(tile.canvas, 0, 0);
+
+      // Blit centred on the cell, additive so overlapping halos
+      // stack and fill the gaps between adjacent characters.
+      const dx = gx * cell + cell / 2 - tileSize / 2;
+      const dy = gy * cell + cell / 2 - tileSize / 2;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.drawImage(tintScratch, dx, dy);
     }
   }
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 /* ===== 9. Planet renderer ===== */
@@ -5322,24 +5400,11 @@ function frame(now){
   else if(game.screen === 'hyperspace') renderHyperspace(game, theme, dt);
   // 'docked' is a pure HTML overlay — no canvas render needed.
 
-  // CSS-filter bloom. Copy #stage onto #bloomDOM and let the browser
-  // compositor apply blur + screen-blend over #stage. Bypasses
-  // WebGL — uses Skia/CG/DirectComposition instead, which doesn't
-  // depend on GPU shader/texture support being intact (the suspected
-  // failure mode of the previous WebGL attempt).
-  if(bloomDOM){
-    if(game.screen === 'docked'){
-      bloomDOM.clear();
-    } else {
-      const intensity = game.glowMul ?? 0.75;
-      // CSS blur is in CSS pixels; we want a wide ambient halo at
-      // wide profile, narrower at tight. Tuned so wide is obviously
-      // glowy, normal is balanced, tight is restrained.
-      const blurByProfile = { tight: 8, normal: 18, wide: 36 };
-      const blurPx = blurByProfile[glyphAtlas.profile] ?? 18;
-      bloomDOM.render(stage, intensity, blurPx);
-    }
-  }
+  // CSS-filter bloom DISABLED. The per-glyph atlas now bakes halos
+  // directly into each tile — running the post-process bloom on top
+  // would double-glow and wash out contrast. Cleared every frame so
+  // any residual canvas content is gone.
+  if(bloomDOM) bloomDOM.clear();
 
   requestAnimationFrame(frame);
 }
