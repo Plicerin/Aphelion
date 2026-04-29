@@ -1266,8 +1266,8 @@
     MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY · <strong>ENTER</strong> JUMP · <strong>ESC</strong> BACK
   </div>
   <div class="legend flight-legend">
-    <strong>W A S D</strong> PITCH/YAW · <strong>Q E</strong> ROLL<br>
-    <strong>SHIFT</strong> THROTTLE UP · <strong>CTRL</strong> DOWN
+    <strong>W A S D</strong> PITCH/YAW · <strong>Q E</strong> ROLL · <strong>SPACE</strong> FIRE<br>
+    <strong>SHIFT</strong> THROTTLE UP · <strong>CTRL</strong> / <strong>Z</strong> DOWN
   </div>
 
 <script type="module">
@@ -1826,7 +1826,7 @@ function spawnNpcs(sys){
     const oy  = (_npcSeedSlotFloat(seed, i, 0xc3) - 0.5) * 30;
     const oz  = 25 + _npcSeedSlotFloat(seed, i, 0xd4) * 65;
     const yaw = _npcSeedSlotFloat(seed, i, 0xe5) * Math.PI * 2;
-    npcs.push({ shipId: 'wraith', role, position: [ox, oy, oz], yaw });
+    npcs.push({ shipId: 'wraith', role, position: [ox, oy, oz], yaw, hp: 100, explodingT: 0 });
   }
   return npcs;
 }
@@ -1895,9 +1895,64 @@ function _stepTrader(npc, npcs, dt){
 }
 
 function stepNpc(npc, ctx, dt){
+  if(npc.explodingT > 0) return npc;
   if(npc.role === 'pirate') return _stepPirate(npc, ctx.playerPos, dt);
   if(npc.role === 'trader') return _stepTrader(npc, ctx.npcs, dt);
   return npc;
+}
+
+/* ===== 5g. Combat (mirror of src/sim/combat.ts) =====
+ * Front laser hit detection, damage, explosion lifecycle. */
+const LASER_RANGE        = 80;
+const LASER_DPS          = 80;
+const NPC_MAX_HP         = 100;
+const NPC_HIT_RADIUS     = 2.5;
+const EXPLOSION_DURATION = 1.0;
+
+function _rayHitsSphere(ro, rd, sc, radius){
+  const ox = sc[0] - ro[0];
+  const oy = sc[1] - ro[1];
+  const oz = sc[2] - ro[2];
+  const t = ox*rd[0] + oy*rd[1] + oz*rd[2];
+  if(t < 0) return null;
+  const ocLen2 = ox*ox + oy*oy + oz*oz;
+  const d2 = ocLen2 - t*t;
+  if(d2 > radius*radius) return null;
+  return t;
+}
+function laserTarget(shipPos, shipForward, npcs){
+  let bestIdx = -1;
+  let bestT = LASER_RANGE;
+  for(let i = 0; i < npcs.length; i++){
+    const npc = npcs[i];
+    if(npc.explodingT > 0 || npc.hp <= 0) continue;
+    const t = _rayHitsSphere(shipPos, shipForward, npc.position, NPC_HIT_RADIUS);
+    if(t !== null && t < bestT){ bestT = t; bestIdx = i; }
+  }
+  return bestIdx >= 0 ? { index: bestIdx, distance: bestT } : null;
+}
+function applyLaserDamage(npcs, index, dps, dt){
+  const target = npcs[index];
+  if(!target || target.explodingT > 0 || target.hp <= 0) return npcs;
+  const newHp = Math.max(0, target.hp - dps * dt);
+  const explodingT = newHp <= 0 ? 0.0001 : target.explodingT;
+  const out = npcs.slice();
+  out[index] = { ...target, hp: newHp, explodingT };
+  return out;
+}
+function advanceExplosions(npcs, dt){
+  const out = [];
+  for(const npc of npcs){
+    if(npc.explodingT > 0){
+      const newT = npc.explodingT + dt;
+      if(newT < EXPLOSION_DURATION){
+        out.push({ ...npc, explodingT: newT });
+      }
+    } else {
+      out.push(npc);
+    }
+  }
+  return out;
 }
 
 /* ===== 5b. Trade anchor =====
@@ -2020,6 +2075,7 @@ const FLIGHT_BINDS = {
   yawLeft:['KeyA'], yawRight:['KeyD'],
   rollLeft:['KeyQ'], rollRight:['KeyE'],
   throttleUp:['ShiftLeft','ShiftRight'], throttleDown:['KeyZ','ControlLeft','ControlRight'],
+  fire:['Space'],
 };
 const heldKeys = new Set();
 addEventListener('keydown', (e)=>{
@@ -2027,6 +2083,8 @@ addEventListener('keydown', (e)=>{
   if(t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
   heldKeys.add(e.code);
   if(e.code.startsWith('Arrow')) e.preventDefault();
+  // Space scrolls the page by default; we need it as the fire button.
+  if(e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', (e)=> heldKeys.delete(e.code));
 addEventListener('blur', ()=> heldKeys.clear());
@@ -3085,6 +3143,79 @@ function drawAnchorStage(grid, cx, cy, cols, rows, info, dockingT){
   }
 }
 
+/**
+ * Draw a destroyed-ship explosion into the given world layer.
+ * Three ingredients, each timed against the explodingT progress
+ * (0..EXPLOSION_DURATION):
+ *   * a bright central flash that peaks early and fades fast,
+ *   * an expanding ring of debris glyphs whose radius grows with t,
+ *   * a fading outer halo of scattered embers behind the ring.
+ *
+ * The screen position (px, py) is in canvas pixels; we convert to
+ * the layer's instrument-cell grid before sampling. depthZ scales
+ * the burst — closer kills look bigger; distant ones still register
+ * but don't dominate the frame.
+ */
+function drawExplosion(layer, px, py, depthZ, explodingT){
+  // Brightest-wins setter against the layer's own grid. Bounds-
+  // checked so off-screen embers are silently dropped.
+  const set = (gx, gy, v, ch) => {
+    if(gx < 0 || gx >= layer.cols || gy < 0 || gy >= layer.rows) return;
+    const idx = gy * layer.cols + gx;
+    if(v > layer.grid[idx]){
+      layer.grid[idx] = v;
+      if(ch) layer.chars[idx] = ch;
+    }
+  };
+
+  const t = Math.max(0, Math.min(1, explodingT / EXPLOSION_DURATION));
+  // Burst size scales with proximity. At spawn depth ~25 the ring
+  // caps near 14 cells; at z~80 it's ~5. Far enough that distant
+  // kills register but don't dominate the frame.
+  const closeMul = Math.max(0.5, Math.min(1.6, 30 / Math.max(8, depthZ)));
+  const cellPx = layer.cell;
+  const cx = px / cellPx;
+  const cy = py / cellPx;
+  const cxR = Math.round(cx);
+  const cyR = Math.round(cy);
+
+  // Central flash: hot core, brightest at t=0, gone by t=0.4.
+  if(t < 0.4){
+    const flashV = 1 - t / 0.4;
+    set(cxR,     cyR,     Math.min(1, 0.95 * flashV + 0.5), '@');
+    set(cxR + 1, cyR,     0.8 * flashV, '*');
+    set(cxR - 1, cyR,     0.8 * flashV, '*');
+    set(cxR,     cyR + 1, 0.8 * flashV, '*');
+    set(cxR,     cyR - 1, 0.8 * flashV, '*');
+  }
+
+  // Expanding debris ring.
+  const ringR  = (2 + t * 12) * closeMul;
+  const ringV  = Math.max(0, 1 - t);
+  const steps  = Math.max(12, Math.floor(ringR * 6));
+  const RING_GLYPHS = ['*', '+', '#', '%', '@'];
+  for(let i = 0; i < steps; i++){
+    const a = (i / steps) * Math.PI * 2;
+    const rx = Math.cos(a) * ringR;
+    const ry = Math.sin(a) * ringR;
+    const ch = RING_GLYPHS[i % RING_GLYPHS.length];
+    set(Math.round(cx + rx), Math.round(cy + ry), ringV * 0.85, ch);
+  }
+
+  // Outer ember halo trailing the ring — dimmer, slightly larger.
+  const haloR = ringR * 1.5;
+  const haloV = Math.max(0, (1 - t) * (1 - t)) * 0.45;
+  if(haloV > 0.03){
+    const haloSteps = Math.max(8, Math.floor(haloR * 4));
+    for(let i = 0; i < haloSteps; i++){
+      const a = (i / haloSteps) * Math.PI * 2 + 0.13;
+      const rx = Math.cos(a) * haloR;
+      const ry = Math.sin(a) * haloR;
+      set(Math.round(cx + rx), Math.round(cy + ry), haloV, '.');
+    }
+  }
+}
+
 function renderFlight(state, theme, dt){
   // Maintain system bodies in sync with current system.
   const seedKey = state.currentSystemSeed ? state.currentSystemSeed.join(',') : null;
@@ -3130,6 +3261,11 @@ function renderFlight(state, theme, dt){
   // world pass — it draws BEFORE the cockpit mask so ships are visible
   // only through the canopy. Tight bloom keeps the wireframe readable.
   const lHull      = makeFlightLayer('hull',      resolveColor(theme.hues.hull),     iCell, iCols, iRows, 1.0, 'tight');
+  // Explosions get the warn hue and atmospheric bloom — a destroyed
+  // ship should glow much wider than the wireframe ever does. Drawn
+  // at instrument scale so each burst pixel is small enough that a
+  // ring made of them still reads as a ring, not a blob.
+  const lExplosion = makeFlightLayer('explosion', resolveColor(theme.hues.warn),     iCell, iCols, iRows, 1.6, 'atmospheric');
   const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows, 1.0, 'tight');
   const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows, 1.0, 'tight');
   const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows, 1.0, 'tight');
@@ -3474,6 +3610,16 @@ function renderFlight(state, theme, dt){
           const cpyN = (-cc[1]*FOV_FLIGHT)/cc[2] + H/2;
           if(occludedByPlanet(cpxN, cpyN, cc[2])) continue;
         }
+        // Exploding NPCs render as a radial burst of glyphs instead
+        // of the wireframe hull. The burst expands and brightens with
+        // explodingT, so the player sees a brief shockwave where the
+        // ship was. Skip the hull-edge code below.
+        if(npc.explodingT > 0 && cc[2] > 0.5){
+          const cpx = (cc[0]*FOV_FLIGHT)/cc[2] + W/2;
+          const cpy = (-cc[1]*FOV_FLIGHT)/cc[2] + H/2;
+          drawExplosion(lExplosion, cpx, cpy, cc[2], npc.explodingT);
+          continue;
+        }
       }
       const cosY = Math.cos(npc.yaw), sinY = Math.sin(npc.yaw);
       // Transform every vertex once; cache projected points.
@@ -3576,6 +3722,16 @@ function renderFlight(state, theme, dt){
   /* ---- INSTRUMENT: concentric reticle ---- */
   const ccx = (W/2)/iCell, ccy = (H*0.42)/iCell;
   instSet(lFrame, Math.round(ccx), Math.round(ccy), 0.55, '·');
+  // Fire flash: bright muzzle pulse at the crosshair while Space is
+  // held. Routed through lExplosion so it picks up the warm hue and
+  // wide atmospheric bloom — reads as 'firing' rather than 'reticle'.
+  if(anyHeld('fire')){
+    instSet(lExplosion, Math.round(ccx),     Math.round(ccy),     1.0, '*');
+    instSet(lExplosion, Math.round(ccx) + 1, Math.round(ccy),     0.7, '─');
+    instSet(lExplosion, Math.round(ccx) - 1, Math.round(ccy),     0.7, '─');
+    instSet(lExplosion, Math.round(ccx),     Math.round(ccy) + 1, 0.7, '│');
+    instSet(lExplosion, Math.round(ccx),     Math.round(ccy) - 1, 0.7, '│');
+  }
   for(let a=0; a<Math.PI*2; a += Math.PI/8){
     const px = ccx + Math.cos(a) * 2;
     const py = ccy + Math.sin(a) * 2;
@@ -3815,7 +3971,7 @@ function renderFlight(state, theme, dt){
   // World-fine pass — geometry that needs precision (NPC hull only,
   // now). Drawn BEFORE the cockpit mask so it's visible only
   // through the canopy.
-  renderLayers([lHull], iCell, iCols, iRows, W, H);
+  renderLayers([lHull, lExplosion], iCell, iCols, iRows, W, H);
 
   // Cockpit mask: fill outside-the-canopy with solid black so the
   // instruments aren't fighting bright world content for legibility.
@@ -4691,6 +4847,21 @@ function frame(now){
       const ctxNpcs = systemBodies.npcs;
       const ctx = { playerPos: game.ship.position, npcs: ctxNpcs };
       systemBodies.npcs = ctxNpcs.map(n => stepNpc(n, ctx, dt));
+    }
+    // Combat: laser fire (Space). Ray-cast from ship origin along
+    // current heading; if a non-exploding npc intersects within
+    // LASER_RANGE, drain its hp by LASER_DPS * dt. When hp hits 0
+    // the npc transitions to the exploding state. Always advance
+    // any in-flight explosions, regardless of fire input.
+    if(systemBodies && systemBodies.npcs){
+      if(anyHeld('fire')){
+        const forward = qRotate(game.ship.orientation, V_FORWARD);
+        const tgt = laserTarget(game.ship.position, forward, systemBodies.npcs);
+        if(tgt){
+          systemBodies.npcs = applyLaserDamage(systemBodies.npcs, tgt.index, LASER_DPS, dt);
+        }
+      }
+      systemBodies.npcs = advanceExplosions(systemBodies.npcs, dt);
     }
     // Docking timer — only meaningful when there's an anchor in this system.
     if(systemBodies && systemBodies.anchor){

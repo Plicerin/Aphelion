@@ -123,13 +123,13 @@ describe('stepNpc — pirate pursuit', () => {
   const dt = 0.05;
 
   function pirate(position: Vec3, yaw = 0): NpcShip {
-    return { shipId: 'wraith', role: 'pirate', position, yaw };
+    return { shipId: 'wraith', role: 'pirate', position, yaw, hp: 100, explodingT: 0 };
   }
   function trader(position: Vec3, yaw = 0): NpcShip {
-    return { shipId: 'wraith', role: 'trader', position, yaw };
+    return { shipId: 'wraith', role: 'trader', position, yaw, hp: 100, explodingT: 0 };
   }
   function police(position: Vec3, yaw = 0): NpcShip {
-    return { shipId: 'wraith', role: 'police', position, yaw };
+    return { shipId: 'wraith', role: 'police', position, yaw, hp: 100, explodingT: 0 };
   }
 
   function ctx(npcs: NpcShip[], playerPos: Vec3 = playerOrigin): NpcStepCtx {
@@ -180,6 +180,12 @@ describe('stepNpc — pirate pursuit', () => {
     for (let i = 0; i < 30; i++) p = stepNpc(p, ctx([p]), dt);
     expect(p.position[1]).toBeCloseTo(7, 5);
   });
+
+  it('exploding NPCs do not move regardless of role', () => {
+    const dying: NpcShip = { ...pirate([0, 0, 30], 0), explodingT: 0.4 };
+    const next = stepNpc(dying, ctx([dying]), dt);
+    expect(next).toBe(dying);
+  });
 });
 
 describe('stepNpc — trader flee', () => {
@@ -187,10 +193,10 @@ describe('stepNpc — trader flee', () => {
   const playerOrigin: Vec3 = [0, 0, 0];
 
   function pirate(position: Vec3, yaw = 0): NpcShip {
-    return { shipId: 'wraith', role: 'pirate', position, yaw };
+    return { shipId: 'wraith', role: 'pirate', position, yaw, hp: 100, explodingT: 0 };
   }
   function trader(position: Vec3, yaw = 0): NpcShip {
-    return { shipId: 'wraith', role: 'trader', position, yaw };
+    return { shipId: 'wraith', role: 'trader', position, yaw, hp: 100, explodingT: 0 };
   }
   function ctx(npcs: NpcShip[]): NpcStepCtx {
     return { playerPos: playerOrigin, npcs };

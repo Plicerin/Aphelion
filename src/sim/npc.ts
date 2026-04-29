@@ -38,6 +38,12 @@ export interface NpcShip {
   readonly position: Vec3;
   /** Yaw rotation around the world-up axis, in radians [0, 2π). */
   readonly yaw: number;
+  /** Hull HP. spawnNpcs initialises to 100; combat reduces it. */
+  readonly hp: number;
+  /** Explosion timer in seconds. 0 = alive, > 0 = dying animation;
+   *  combat.advanceExplosions removes the npc once this exceeds the
+   *  configured EXPLOSION_DURATION. */
+  readonly explodingT: number;
 }
 
 /**
@@ -95,7 +101,7 @@ export function spawnNpcs(system: System): readonly NpcShip[] {
     const oy  = (seedSlotFloat(seed, i, 0xc3) - 0.5) * 30;         // -15..+15
     const oz  = 25 + seedSlotFloat(seed, i, 0xd4) * 65;            // 25..90
     const yaw = seedSlotFloat(seed, i, 0xe5) * Math.PI * 2;
-    npcs.push({ shipId: 'wraith', role, position: [ox, oy, oz], yaw });
+    npcs.push({ shipId: 'wraith', role, position: [ox, oy, oz], yaw, hp: 100, explodingT: 0 });
   }
   return npcs;
 }
@@ -127,9 +133,11 @@ export interface NpcStepCtx {
 
 /**
  * One frame of NPC behaviour. Pure: takes the npc + context + dt,
- * returns a new npc. Police return unchanged in this slice.
+ * returns a new npc. Exploding npcs and police return unchanged in
+ * this slice.
  */
 export function stepNpc(npc: NpcShip, ctx: NpcStepCtx, dt: number): NpcShip {
+  if (npc.explodingT > 0) return npc;
   if (npc.role === 'pirate') return stepPirate(npc, ctx.playerPos, dt);
   if (npc.role === 'trader') return stepTrader(npc, ctx.npcs, dt);
   return npc;
