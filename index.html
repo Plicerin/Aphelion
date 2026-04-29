@@ -1749,16 +1749,27 @@ function renderLayers(layers, cell, cols, rows, W, H){
     }
   }
 
-  // Bloom
+  // Bloom — Effulgence-grade intensity. Six passes from a sharp core
+  // (blur 1) to a wide haze (blur 96), accumulating glow in the
+  // 'lighter' composite mode. No global attenuation; per-layer
+  // bloomMul still scales it. Higher cumulative alpha (~2.4 base)
+  // gives the saturated, blooming look the reference frames have.
   ctx.globalCompositeOperation='lighter';
-  const passes=[ {blur:2,alpha:0.6}, {blur:6,alpha:0.5}, {blur:16,alpha:0.4}, {blur:36,alpha:0.25} ];
+  const passes=[
+    { blur:  1, alpha: 0.62 },   // tight hot core
+    { blur:  3, alpha: 0.55 },
+    { blur:  8, alpha: 0.45 },
+    { blur: 20, alpha: 0.35 },
+    { blur: 48, alpha: 0.25 },
+    { blur: 96, alpha: 0.15 },   // wide ambient haze
+  ];
   for(const L of layers){
     const b=getBucket(L.name);
     if(!b.canvas.width || !b.canvas.height) continue;
-    const mul = L.bloomMul || 1;     // boost glow for atmospheric layers (planet)
+    const mul = L.bloomMul || 1;
     for(const p of passes){
       ctx.filter=`blur(${p.blur}px)`;
-      ctx.globalAlpha = Math.min(1, p.alpha*0.7 * mul);
+      ctx.globalAlpha = Math.min(1, p.alpha * mul);
       ctx.drawImage(b.canvas, 0, 0, W, H);
     }
   }
