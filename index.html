@@ -33,18 +33,24 @@
     z-index: 5;
   }
 
-  /* `isolation: isolate` makes body its own stacking context so the
-     mix-blend-mode on #bloomGL composites against #stage rather than
-     leaking up into whatever the browser considers the document
-     backdrop. Without this, blend modes can silently no-op. */
+  /* `isolation: isolate` puts body in its own stacking context so the
+     mix-blend-mode on #bloomDOM composites against #stage rather than
+     leaking past body. Without this, blend modes can silently no-op. */
   body { isolation: isolate; }
   #stage { position: fixed; inset: 0; display: block; z-index: 1; cursor: crosshair; }
-  /* WebGL bloom overlay — receives the bloom postprocess output and
-     composites over #stage with screen blending. Pointer-events off
-     so it never steals clicks; mix-blend-mode: screen brightens dark
-     areas with the bloom colour while leaving bright canvas-2D
-     content saturated. */
-  #bloomGL { position: fixed; inset: 0; display: block; z-index: 2; pointer-events: none; mix-blend-mode: screen; }
+  /* CSS-filter bloom overlay. We drawImage the #stage canvas onto
+     #bloomDOM each frame, then let the browser apply `filter: blur()`
+     and mix-blend-mode: screen to composite a soft-glow copy back
+     over #stage. This bypasses WebGL entirely — CSS filter goes
+     through the browser compositor (Skia / CG / DirectComposition)
+     and has no shader / texture / framebuffer dependencies. The blur
+     amount is set by JS from the glow + bloom-profile UI. */
+  #bloomDOM {
+    position: fixed; inset: 0; display: block; z-index: 2;
+    pointer-events: none;
+    mix-blend-mode: screen;
+    will-change: filter;
+  }
 
   /* ============== Title bar (shared across screens) ============== */
   #title {
@@ -988,7 +994,7 @@
 </head>
 <body data-screen="chart">
   <canvas id="stage"></canvas>
-  <canvas id="bloomGL"></canvas>
+  <canvas id="bloomDOM"></canvas>
 
   <!-- Title (always visible) -->
   <div id="title">
@@ -1840,280 +1846,73 @@ addEventListener('resize', resize);
 resize();
 
 /**
- * WebGL bloom postprocess.
+ * CSS-filter bloom postprocess.
  *
- * The 2D canvas pipeline drew sharp characters with no halo bleed in
- * Chrome (see docs/bugs.md). WebGL's blur is a real GPU Gaussian
- * convolution that doesn't rely on ctx.filter or shadowBlur, so it
- * can produce the wide ambient glow Effulgence's reference frames
- * have without depending on the canvas-2D quirks that defeated the
- * previous attempts.
+ * Previous WebGL attempt produced no visible halo on the user's
+ * machines across Chrome / Edge / Firefox. Strong signal that the
+ * WebGL backend was running in a fallback mode (ANGLE/SwiftShader)
+ * lacking some primitive my blur shader needed. Switching to CSS
+ * `filter: blur()` on a second canvas — the blur is handled by the
+ * browser compositor, not by WebGL, so it doesn't depend on shader
+ * / texture / framebuffer support being intact.
  *
  * Pipeline (per frame):
- *   1. Upload #stage as a texture (the "bright pass" source).
- *   2. Half-res horizontal Gaussian blur (sample srcTex, render to
- *      half-res FBO).
- *   3. Half-res vertical blur (ping-pong FBO).
- *   4. Quarter-res horizontal blur of the half-res result.
- *   5. Quarter-res vertical blur.
- *   6. Composite half + quarter additively to the #bloomGL canvas.
- *
- * The #bloomGL canvas sits over #stage with mix-blend-mode: screen,
- * so its bright halo pixels brighten the dark gaps in the 2D canvas
- * underneath while leaving sharp character pixels intact.
+ *   1. drawImage(#stage) → #bloomDOM (a 2D canvas copy).
+ *   2. Set #bloomDOM.style.filter = `blur(Xpx) brightness(Y)`.
+ *   3. Browser composites #bloomDOM over #stage with
+ *      mix-blend-mode: screen — the blurred copy lights up the dark
+ *      gaps under #stage while sharp character pixels stay sharp.
  */
-const bloomGL = (function(){
-  const bloomCanvas = document.getElementById('bloomGL');
-  if(!bloomCanvas){
-    console.warn('[Aphelion bloom] #bloomGL element not found; bloom disabled.');
+const bloomDOM = (function(){
+  const c = document.getElementById('bloomDOM');
+  if(!c){
+    console.warn('[Aphelion bloom] #bloomDOM element not found; bloom disabled.');
     return null;
   }
-  const gl = bloomCanvas.getContext('webgl', {
-    alpha: true, premultipliedAlpha: false, antialias: false, depth: false, stencil: false,
-  });
-  if(!gl){
-    console.warn('[Aphelion bloom] WebGL context unavailable; bloom disabled.');
-    bloomCanvas.style.display = 'none';
+  const cx = c.getContext('2d', { alpha: true });
+  if(!cx){
+    console.warn('[Aphelion bloom] 2D context unavailable; bloom disabled.');
+    c.style.display = 'none';
     return null;
   }
-  // Renderer / vendor strings are useful to know which GPU path
-  // Chrome chose (SwiftShader fallback vs hardware), and they often
-  // explain why a Gaussian blur looks subtly different on different
-  // machines.
-  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-  const vendor   = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)   : gl.getParameter(gl.VENDOR);
-  const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
-  console.log('[Aphelion bloom] WebGL activated. vendor=%s renderer=%s', vendor, renderer);
+  console.log('[Aphelion bloom] CSS-filter bloom activated.');
 
-  const VERT = `attribute vec2 position;
-varying vec2 vUv;
-void main(){
-  gl_Position = vec4(position, 0.0, 1.0);
-  vUv = position * 0.5 + 0.5;
-}`;
-
-  // Separable 9-tap Gaussian. uDir picks horizontal (1,0) or vertical
-  // (0,1); uRadius scales the kernel spread in source texels.
-  const FRAG_BLUR = `precision mediump float;
-varying vec2 vUv;
-uniform sampler2D uTex;
-uniform vec2 uTexel;
-uniform vec2 uDir;
-uniform float uRadius;
-void main(){
-  vec2 step = uDir * uTexel * uRadius;
-  vec4 sum = vec4(0.0);
-  sum += texture2D(uTex, vUv - step * 4.0) * 0.05;
-  sum += texture2D(uTex, vUv - step * 3.0) * 0.09;
-  sum += texture2D(uTex, vUv - step * 2.0) * 0.12;
-  sum += texture2D(uTex, vUv - step * 1.0) * 0.15;
-  sum += texture2D(uTex, vUv) * 0.18;
-  sum += texture2D(uTex, vUv + step * 1.0) * 0.15;
-  sum += texture2D(uTex, vUv + step * 2.0) * 0.12;
-  sum += texture2D(uTex, vUv + step * 3.0) * 0.09;
-  sum += texture2D(uTex, vUv + step * 4.0) * 0.05;
-  gl_FragColor = sum;
-}`;
-
-  // Composite: sum two blurred textures, scale by intensity, derive
-  // alpha from luminance so screen-blend treats dark pixels as no-op.
-  const FRAG_COMP = `precision mediump float;
-varying vec2 vUv;
-uniform sampler2D uTexA;
-uniform sampler2D uTexB;
-uniform float uIntensity;
-void main(){
-  vec4 a = texture2D(uTexA, vUv);
-  vec4 b = texture2D(uTexB, vUv);
-  vec3 sum = (a.rgb + b.rgb) * uIntensity;
-  float luma = dot(sum, vec3(0.299, 0.587, 0.114));
-  gl_FragColor = vec4(sum, min(1.0, luma * 1.5));
-}`;
-
-  function compileShader(type, src){
-    const sh = gl.createShader(type);
-    gl.shaderSource(sh, src);
-    gl.compileShader(sh);
-    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
-      console.error('Aphelion shader compile error:', gl.getShaderInfoLog(sh));
-      gl.deleteShader(sh);
-      return null;
-    }
-    return sh;
-  }
-  function linkProgram(vs, fs){
-    const p = gl.createProgram();
-    gl.attachShader(p, vs); gl.attachShader(p, fs);
-    gl.linkProgram(p);
-    if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
-      console.error('Aphelion program link error:', gl.getProgramInfoLog(p));
-      gl.deleteProgram(p);
-      return null;
-    }
-    return p;
-  }
-
-  const vs       = compileShader(gl.VERTEX_SHADER, VERT);
-  const blurFs   = compileShader(gl.FRAGMENT_SHADER, FRAG_BLUR);
-  const compFs   = compileShader(gl.FRAGMENT_SHADER, FRAG_COMP);
-  if(!vs || !blurFs || !compFs){ bloomCanvas.style.display='none'; return null; }
-
-  const pBlur = linkProgram(vs, blurFs);
-  const pComp = linkProgram(vs, compFs);
-  if(!pBlur || !pComp){ bloomCanvas.style.display='none'; return null; }
-
-  // Cache uniform / attribute locations once.
-  const u = {
-    blur: {
-      pos:    gl.getAttribLocation(pBlur, 'position'),
-      tex:    gl.getUniformLocation(pBlur, 'uTex'),
-      texel:  gl.getUniformLocation(pBlur, 'uTexel'),
-      dir:    gl.getUniformLocation(pBlur, 'uDir'),
-      radius: gl.getUniformLocation(pBlur, 'uRadius'),
-    },
-    comp: {
-      pos:    gl.getAttribLocation(pComp, 'position'),
-      texA:   gl.getUniformLocation(pComp, 'uTexA'),
-      texB:   gl.getUniformLocation(pComp, 'uTexB'),
-      intens: gl.getUniformLocation(pComp, 'uIntensity'),
-    },
-  };
-
-  // Fullscreen-quad geometry in clip space.
-  const quad = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-
-  // Lazy-allocated textures + framebuffers, keyed by current canvas
-  // size. Half-res for the broad halo, quarter-res for the ambient
-  // bleed; ping-pong each pair across H/V passes.
-  let srcTex = null;
-  let halfA_t = null, halfA_f = null;
-  let halfB_t = null, halfB_f = null;
-  let quartA_t = null, quartA_f = null;
-  let quartB_t = null, quartB_f = null;
   let lastW = 0, lastH = 0;
-
-  function makeTex(w, h){
-    const t = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, t);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    return t;
-  }
-  function makeFBO(tex){
-    const f = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    return f;
-  }
   function ensureSize(w, h){
     if(w === lastW && h === lastH) return;
-    [srcTex, halfA_t, halfB_t, quartA_t, quartB_t].forEach(t => t && gl.deleteTexture(t));
-    [halfA_f, halfB_f, quartA_f, quartB_f].forEach(f => f && gl.deleteFramebuffer(f));
     lastW = w; lastH = h;
-    bloomCanvas.width = w; bloomCanvas.height = h;
-    bloomCanvas.style.width = innerWidth + 'px';
-    bloomCanvas.style.height = innerHeight + 'px';
-    srcTex = makeTex(w, h);
-    const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
-    halfA_t  = makeTex(hw, hh); halfA_f  = makeFBO(halfA_t);
-    halfB_t  = makeTex(hw, hh); halfB_f  = makeFBO(halfB_t);
-    const qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
-    quartA_t = makeTex(qw, qh); quartA_f = makeFBO(quartA_t);
-    quartB_t = makeTex(qw, qh); quartB_f = makeFBO(quartB_t);
+    c.width = w; c.height = h;
+    c.style.width  = innerWidth  + 'px';
+    c.style.height = innerHeight + 'px';
   }
 
-  function blurPass(srcTexHandle, dstFbo, dstW, dstH, srcW, srcH, dirX, dirY, radius){
-    gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
-    gl.viewport(0, 0, dstW, dstH);
-    gl.useProgram(pBlur);
-    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-    gl.enableVertexAttribArray(u.blur.pos);
-    gl.vertexAttribPointer(u.blur.pos, 2, gl.FLOAT, false, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, srcTexHandle);
-    gl.uniform1i(u.blur.tex, 0);
-    gl.uniform2f(u.blur.texel, 1/srcW, 1/srcH);
-    gl.uniform2f(u.blur.dir, dirX, dirY);
-    gl.uniform1f(u.blur.radius, radius);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  let _firstRender = true;
+  function render(sourceCanvas, intensity, blurPx){
+    if(!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return;
+    const W = sourceCanvas.width, H = sourceCanvas.height;
+    ensureSize(W, H);
+    if(_firstRender){
+      console.log('[Aphelion bloom] first render: %dx%d intensity=%f blurPx=%f', W, H, intensity, blurPx);
+      _firstRender = false;
+    }
+    if(intensity < 0.02){
+      cx.clearRect(0, 0, W, H);
+      c.style.filter = 'none';
+      return;
+    }
+    cx.clearRect(0, 0, W, H);
+    cx.drawImage(sourceCanvas, 0, 0, W, H);
+    // brightness > 1 amplifies the blurred copy so the glow reads as
+    // glow instead of just a softened ghost. Tied to the slider so 0
+    // means no amplification.
+    const brightness = 1 + intensity * 1.2;
+    c.style.filter = `blur(${blurPx}px) brightness(${brightness})`;
   }
 
   function clear(){
     if(lastW === 0) return;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, bloomCanvas.width, bloomCanvas.height);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-  }
-
-  let _firstRender = true;
-  function render(sourceCanvas, intensity, radius){
-    if(!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return;
-    const W = sourceCanvas.width, H = sourceCanvas.height;
-    ensureSize(W, H);
-
-    if(_firstRender){
-      console.log('[Aphelion bloom] first render: %dx%d intensity=%f radius=%f', W, H, intensity, radius);
-      _firstRender = false;
-    }
-
-    if(intensity < 0.02){ clear(); return; }
-
-    // Upload the 2D canvas as the bloom source. FLIP_Y so texture UV
-    // (0,0) is at the SOURCE's top-left, matching the canvas-2D
-    // coordinate system the bloom needs to align with on output.
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.bindTexture(gl.TEXTURE_2D, srcTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-
-    const hw = Math.max(1, W >> 1), hh = Math.max(1, H >> 1);
-    const qw = Math.max(1, W >> 2), qh = Math.max(1, H >> 2);
-
-    // Half-res H + V blur from source.
-    blurPass(srcTex, halfA_f, hw, hh, W, H,    1, 0, radius);
-    blurPass(halfA_t, halfB_f, hw, hh, hw, hh, 0, 1, radius);
-
-    // Quarter-res H + V blur seeded from the half-res result. This
-    // gives the broader "ambient" halo at low cost.
-    blurPass(halfB_t,  quartA_f, qw, qh, hw, hh, 1, 0, radius);
-    blurPass(quartA_t, quartB_f, qw, qh, qw, qh, 0, 1, radius);
-
-    // Composite half + quarter to the GL canvas.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, W, H);
-    gl.useProgram(pComp);
-    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-    gl.enableVertexAttribArray(u.comp.pos);
-    gl.vertexAttribPointer(u.comp.pos, 2, gl.FLOAT, false, 0, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, halfB_t);
-    gl.uniform1i(u.comp.texA, 0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, quartB_t);
-    gl.uniform1i(u.comp.texB, 1);
-    gl.uniform1f(u.comp.intens, intensity);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-    // Diagnostic: a 60x60 red square in the bottom-left of the GL
-    // canvas. If this square shows up on screen (it screen-blends
-    // over #stage to a vivid red), the GL canvas IS being composited
-    // and the bug is somewhere in the bloom pipeline. If it doesn't,
-    // the GL canvas is being hidden by something else (mix-blend-mode
-    // failure, stacking context, GPU sandbox, etc.). Remove once the
-    // glow is verified working.
-    gl.enable(gl.SCISSOR_TEST);
-    gl.scissor(0, 0, 60, 60);
-    gl.clearColor(1, 0.1, 0.1, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.disable(gl.SCISSOR_TEST);
+    cx.clearRect(0, 0, lastW, lastH);
+    c.style.filter = 'none';
   }
 
   return { render, clear };
@@ -2189,7 +1988,7 @@ const glyphAtlas = {
 
 function renderLayers(layers, cell, cols, rows, W, H){
   // Sharp character pass only. The glow halo lives in the WebGL
-  // bloom postprocess (bloomGL.render in the main frame loop), which
+  // bloom postprocess (bloomDOM.render in the main frame loop), which
   // operates on the entire #stage canvas after this function returns.
   // Keeping renderLayers focused on glyph placement makes the bloom
   // input deterministic and the canvas-2D code easy to reason about.
@@ -4510,18 +4309,22 @@ function frame(now){
   else if(game.screen === 'hyperspace') renderHyperspace(game, theme, dt);
   // 'docked' is a pure HTML overlay — no canvas render needed.
 
-  // WebGL bloom postprocess. Reads the freshly-painted #stage canvas
-  // and paints the halo onto #bloomGL, which screen-blends over the
-  // top. On 'docked' the GL canvas is cleared so the docked HTML
-  // overlay isn't lit by stale bloom from the previous flight frame.
-  if(bloomGL){
+  // CSS-filter bloom. Copy #stage onto #bloomDOM and let the browser
+  // compositor apply blur + screen-blend over #stage. Bypasses
+  // WebGL — uses Skia/CG/DirectComposition instead, which doesn't
+  // depend on GPU shader/texture support being intact (the suspected
+  // failure mode of the previous WebGL attempt).
+  if(bloomDOM){
     if(game.screen === 'docked'){
-      bloomGL.clear();
+      bloomDOM.clear();
     } else {
-      const intensity = (game.glowMul ?? 0.75) * 1.4;
-      const radiusByProfile = { tight: 1.2, normal: 2.4, wide: 4.0 };
-      const radius = radiusByProfile[glyphAtlas.profile] ?? 2.4;
-      bloomGL.render(stage, intensity, radius);
+      const intensity = game.glowMul ?? 0.75;
+      // CSS blur is in CSS pixels; we want a wide ambient halo at
+      // wide profile, narrower at tight. Tuned so wide is obviously
+      // glowy, normal is balanced, tight is restrained.
+      const blurByProfile = { tight: 8, normal: 18, wide: 36 };
+      const blurPx = blurByProfile[glyphAtlas.profile] ?? 18;
+      bloomDOM.render(stage, intensity, blurPx);
     }
   }
 
