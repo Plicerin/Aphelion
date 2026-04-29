@@ -1012,6 +1012,13 @@
     letter-spacing: 0.18em;
     animation: wanted-pulse 0.8s ease-in-out infinite alternate;
   }
+  #hInvuln .v {
+    color: var(--accent);
+    text-shadow: 0 0 8px var(--accent);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    animation: wanted-pulse 0.5s ease-in-out infinite alternate;
+  }
   @keyframes wanted-pulse {
     from { opacity: 0.55; }
     to   { opacity: 1; }
@@ -1283,6 +1290,7 @@
     <div><span class="lbl">KILLS</span> <span class="v" id="hKills">0</span></div>
     <div id="hMassLock" hidden><span class="v">⚠ MASS-LOCKED</span></div>
     <div id="hWanted"   hidden><span class="v">⚠ WANTED</span></div>
+    <div id="hInvuln"   hidden><span class="v">◉ POD · <span id="hInvulnT">5.0</span>s</span></div>
   </div>
   <!-- WebGL diagnostics — cockpit only. Used to identify which GPU
        backend the browser is using; ANGLE / SwiftShader fallback is
@@ -2173,28 +2181,33 @@ function reduce(state, action){
     case 'destroyed': {
       // Hull breach. Pod-eject simulacrum: full hull + fuel back,
       // half the cargo lost, credits preserved (banks beat space
-      // pirates), player parked at the system origin again. Stays
-      // in the current system. respawnGen bumps so the renderer
-      // rebuilds systemBodies — NPCs go back to their deterministic
-      // spawn positions instead of staying parked next to the
-      // wreckage chasing the new pod. respawnInvulnT gives a 3-sec
-      // grace window so the player can orient before being shot at.
-      // wantedT clears — death is the punishment.
+      // pirates), player parked WELL BEHIND the npc spawn area so
+      // pirates have to travel before they can re-engage. respawnGen
+      // bumps so the renderer rebuilds systemBodies — NPCs go back
+      // to their deterministic spawn positions instead of staying
+      // parked next to the wreckage. respawnInvulnT gives a 5-sec
+      // grace window. wantedT clears — death is the punishment.
       const halvedCargo = {};
       for(const k of Object.keys(state.cargo || {})){
         const v = state.cargo[k];
         if(typeof v === 'number' && v > 0) halvedCargo[k] = Math.floor(v / 2);
       }
+      // Safe respawn point: 100u behind origin, facing +Z. NPC spawn
+      // range is z=25..90, so even the closest npc is ~125u away,
+      // well beyond NPC_LASER_RANGE=60. Pirates have to traverse 65u
+      // at speed 8 (~8 seconds) before they can fire — combined with
+      // the invuln window the player gets a clean restart.
+      const safeShip = { ...INITIAL_SHIP, position: [0, 0, -100] };
       return {
         ...state,
         screen: 'flight',
         shipHp: PLAYER_MAX_HP,
         fuel:   FUEL_MAX_LY,
         cargo:  halvedCargo,
-        ship:   INITIAL_SHIP,
+        ship:   safeShip,
         dockingT: 0,
         respawnGen: (state.respawnGen ?? 0) + 1,
-        respawnInvulnT: 3.0,
+        respawnInvulnT: 5.0,
         wantedT: 0,
       };
     }
@@ -4041,11 +4054,14 @@ function renderFlight(state, theme, dt){
 
   // Radar blips. Project each non-exploding NPC onto the scanner
   // ellipse based on its bearing in the player-local frame: forward
-  // is up on the disk, right is right. NPCs inside SCANNER_RANGE map
-  // linearly to the ellipse interior; ones beyond pin to the
-  // ellipse edge as a direction arrow so the player can still tell
-  // which way the contact is. Pirates render on the hostile (warn)
-  // layer; police and traders share the friend (status) layer.
+  // is up on the disk, right is right. Per-role glyph + colour:
+  //   pirate  → '@' on the warn layer + 4-direction halo (red, big)
+  //   police  → '+' on the status layer + small halo (cyan)
+  //   trader  → 'o' on the status layer (cyan)
+  // Off-range contacts pin to the ellipse edge as a small dot so
+  // the player still sees direction-of-threat even when the contact
+  // hasn't arrived yet. Cross-shaped halo cells are dimmer so the
+  // central glyph stays the dominant 'where exactly is it'.
   if(systemBodies && systemBodies.npcs && systemBodies.npcs.length){
     const SCANNER_RANGE = 100;
     for(const npc of systemBodies.npcs){
@@ -4061,20 +4077,35 @@ function renderFlight(state, theme, dt){
       const inRange = dist <= SCANNER_RANGE;
       let dispX, dispY;
       if(inRange){
-        // forward (positive z) goes UP on disk (negative screen y).
         dispX = rcx + (bx / SCANNER_RANGE) * rw;
         dispY = rcy - (bz / SCANNER_RANGE) * rh;
       } else {
-        // Pin to the ellipse edge in the bearing direction.
         const nx = bx / dist;
         const nz = bz / dist;
         dispX = rcx + nx * rw;
         dispY = rcy - nz * rh;
       }
-      const layer  = npc.role === 'pirate' ? lBlipHostile : lBlipFriend;
-      const ch     = inRange ? '*' : '·';
-      const v      = inRange ? 0.95 : 0.55;
-      instSet(layer, Math.round(dispX/iCell), Math.round(dispY/iCell), v, ch);
+      const isHostile = npc.role === 'pirate';
+      const layer = isHostile ? lBlipHostile : lBlipFriend;
+      let ch = '·', v = 0.6;
+      if(inRange){
+        if(npc.role === 'pirate') { ch = '@'; v = 1.0; }
+        else if(npc.role === 'police') { ch = '+'; v = 0.95; }
+        else                           { ch = 'o'; v = 0.85; }
+      }
+      const cx = Math.round(dispX/iCell);
+      const cy = Math.round(dispY/iCell);
+      instSet(layer, cx, cy, v, ch);
+      // Cross-halo for in-range contacts so the blip reads as a
+      // distinct object on the small scanner. Hostiles get a
+      // brighter, slightly larger halo so they pop visually.
+      if(inRange){
+        const haloV = isHostile ? 0.7 : 0.5;
+        instSet(layer, cx + 1, cy,     haloV, '─');
+        instSet(layer, cx - 1, cy,     haloV, '─');
+        instSet(layer, cx,     cy + 1, haloV, '│');
+        instSet(layer, cx,     cy - 1, haloV, '│');
+      }
     }
   }
 
@@ -4356,6 +4387,18 @@ function renderFlight(state, theme, dt){
   // timer cools off.
   const _wantedEl = document.getElementById('hWanted');
   _wantedEl.hidden = !((state.wantedT ?? 0) > 0);
+
+  // Post-respawn invulnerability — shows seconds remaining so the
+  // player knows the grace window is active and how long they have
+  // to look around before combat resumes.
+  const _invulnEl = document.getElementById('hInvuln');
+  const _invulnT  = state.respawnInvulnT ?? 0;
+  if(_invulnT > 0){
+    _invulnEl.hidden = false;
+    document.getElementById('hInvulnT').textContent = _invulnT.toFixed(1);
+  } else {
+    _invulnEl.hidden = true;
+  }
 }
 
 /* ===== 12. Hyperspace screen ===== */
