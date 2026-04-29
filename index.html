@@ -838,6 +838,29 @@
   }
   .trade-pane.cargo button.launch:hover { filter: brightness(1.1); }
 
+  .trade-pane.cargo button.refuel {
+    margin-top: 6px;
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: 8px;
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .trade-pane.cargo button.refuel:hover:not(:disabled) {
+    background: var(--accent);
+    color: #02030a;
+  }
+  .trade-pane.cargo button.refuel:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
   .trade-pane.detail .detail-content { font-size: 12px; line-height: 1.6; }
   .trade-pane.detail .detail-content h3 {
     font-size: 22px;
@@ -1214,6 +1237,11 @@
             <span class="lbl">System</span>
             <span class="v" id="cargoSystem">—</span>
           </div>
+          <div class="row-line">
+            <span class="lbl">Fuel</span>
+            <span class="v"><span id="dockFuelEl">—</span> / <span id="dockFuelMaxEl">7</span> LY</span>
+          </div>
+          <button class="refuel" id="refuelBtn" type="button">Refuel · — cr</button>
           <button class="launch" id="launchBtn" type="button">|Esc Launch|</button>
         </div>
       </section>
@@ -1651,6 +1679,7 @@ function applySell(cargo, credits, commodityId, n, price){
    fuel, cabin heat, mass lock. Mirrors src/sim/cockpit.ts.
 */
 const FUEL_MAX_LY = 7.0;
+const FUEL_PRICE_PER_LY = 5;
 const MASS_LOCK_RADIUS = 80;
 function compass(cur, tgt){
   if(!cur || !tgt) return null;
@@ -1664,6 +1693,25 @@ function fuelAfterJump(fuel, ly){
   if(r < 0) return 0;
   if(r > FUEL_MAX_LY) return FUEL_MAX_LY;
   return r;
+}
+// Refuel pricing helpers — mirror of src/sim/refuel.ts. Buys whole
+// light-years up to a full tank, capped by what credits afford.
+function refuelCost(currentFuel, maxFuel){
+  const need = Math.max(0, Math.floor(maxFuel - currentFuel));
+  return need * FUEL_PRICE_PER_LY;
+}
+function applyRefuel(currentFuel, currentCredits, maxFuel){
+  const needed = Math.max(0, maxFuel - currentFuel);
+  if(needed <= 0 || currentCredits < FUEL_PRICE_PER_LY){
+    return { newFuel: currentFuel, newCredits: currentCredits, bought: 0 };
+  }
+  const affordable = Math.floor(currentCredits / FUEL_PRICE_PER_LY);
+  const bought = Math.min(Math.floor(needed), affordable);
+  return {
+    newFuel:    currentFuel + bought,
+    newCredits: currentCredits - bought * FUEL_PRICE_PER_LY,
+    bought,
+  };
 }
 function cabinHeat(shipPos, sunPos, dangerRadius, coolRadius){
   dangerRadius = dangerRadius == null ? 35 : dangerRadius;
@@ -4702,6 +4750,20 @@ function renderTradeScreen(sys){
   document.getElementById('cargoUsedEl').textContent = cargoUsed(game.cargo || emptyCargo());
   document.getElementById('cargoCapEl').textContent = CARGO_CAPACITY;
 
+  // Fuel readout + refuel button label/state.
+  const fuel = game.fuel ?? FUEL_MAX_LY;
+  document.getElementById('dockFuelEl').textContent = fuel.toFixed(1);
+  document.getElementById('dockFuelMaxEl').textContent = String(FUEL_MAX_LY);
+  const cost = refuelCost(fuel, FUEL_MAX_LY);
+  const refuelBtn = document.getElementById('refuelBtn');
+  if(cost === 0){
+    refuelBtn.textContent = 'Tank Full';
+    refuelBtn.disabled = true;
+  } else {
+    refuelBtn.textContent = `Refuel · ${cost} cr`;
+    refuelBtn.disabled = (game.credits || 0) < FUEL_PRICE_PER_LY;
+  }
+
   // Cargo list — show held quantity per commodity.
   const cargoList = document.getElementById('cargoList');
   cargoList.innerHTML = '';
@@ -5069,6 +5131,21 @@ function showJumpDenied(reason){
 // Launch button on the docked overlay
 document.getElementById('launchBtn').addEventListener('click', ()=>{
   dispatch({ type:'launch' });
+});
+
+// Refuel button on the docked overlay. Buys whole light-years up to
+// either a full tank or what the player can afford, whichever is
+// smaller. State updates go through the existing persistGame so
+// fuel + credits both survive a reload.
+document.getElementById('refuelBtn').addEventListener('click', ()=>{
+  const r = applyRefuel(game.fuel ?? FUEL_MAX_LY, game.credits ?? 0, FUEL_MAX_LY);
+  if(r.bought === 0) return;
+  game = { ...game, fuel: r.newFuel, credits: r.newCredits };
+  persistGame();
+  // Re-render the trade screen so the fuel readout, credits, and
+  // refuel button label all reflect the new state immediately.
+  const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
+  if(sys) renderTradeScreen(sys);
 });
 
 // Main loop
