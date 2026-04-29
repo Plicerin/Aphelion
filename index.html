@@ -2076,9 +2076,12 @@ resize();
     w.document.close();
   }
 
-  // Bake one tile using the same stacked-shadowBlur recipe the atlas
-  // attempts used. Returns a PNG data URL so it can be displayed and
-  // opened in a separate tab for inspection.
+  // Bake one tile: halo first (stacked shadowBlur ramp), then a hot
+  // core on top (three sharp fillText calls at the same position,
+  // no shadow). The two-stage recipe is what the W3Schools-style
+  // CSS neon look is doing under the hood — diffuse coloured halo
+  // around a bright core that fades to white at the centre.
+  // Returns a PNG data URL.
   function bakeTile(ch, hue, sat, lightness, passes){
     const SIZE = 200;
     const c = document.createElement('canvas');
@@ -2087,6 +2090,9 @@ resize();
     cx.font = '40px ui-monospace, "JetBrains Mono", monospace';
     cx.textBaseline = 'middle';
     cx.textAlign = 'center';
+    const x = SIZE/2, y = SIZE/2;
+
+    // Halo bake — stacked shadowBlur passes under 'lighter'.
     cx.globalCompositeOperation = 'lighter';
     const N = passes.length;
     for(let i = 0; i < N; i++){
@@ -2099,10 +2105,33 @@ resize();
       cx.shadowBlur  = p.blur;
       cx.fillStyle   = passColor;
       cx.globalAlpha = p.alpha;
-      cx.fillText(ch, SIZE/2, SIZE/2);
+      cx.fillText(ch, x, y);
     }
-    cx.globalCompositeOperation = 'source-over';
+
+    // Hot core — three sharp fillText calls AFTER the halo, on top
+    // of it. No shadowBlur. Stacked under 'lighter' so the centre
+    // saturates: saturated tube colour + desaturated lighter pull-up
+    // + a touch of pure white at reduced alpha. Brightness is 1.0
+    // for the diagnostic so we see the strongest case the recipe
+    // can produce.
+    const brightness = 1.0;
+    cx.shadowBlur = 0;
+    cx.shadowColor = 'transparent';
+    cx.globalCompositeOperation = 'lighter';
+    // 1. Saturated colour at full brightness — the "neon tube colour".
+    cx.fillStyle = `hsl(${hue}, ${sat}%, ${50 * brightness}%)`;
     cx.globalAlpha = 1;
+    cx.fillText(ch, x, y);
+    // 2. Desaturated, lighter — pulls the core toward white.
+    cx.fillStyle = `hsl(${hue}, ${sat * 0.4}%, ${75 * brightness}%)`;
+    cx.fillText(ch, x, y);
+    // 3. Pure white at reduced alpha — the hot centre.
+    cx.globalAlpha = 0.6 * brightness;
+    cx.fillStyle = '#ffffff';
+    cx.fillText(ch, x, y);
+    cx.globalAlpha = 1;
+
+    cx.globalCompositeOperation = 'source-over';
     return c.toDataURL();
   }
 
