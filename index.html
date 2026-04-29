@@ -101,31 +101,51 @@
     color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.2em;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
   }
+  #webgl-diag .diag-bake-hint {
+    font-size: 9px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+  #webgl-diag .diag-bake-hint b { color: var(--accent); font-weight: 600; }
   #webgl-diag .diag-bake-row {
     display: flex;
-    gap: 8px;
-    align-items: flex-start;
+    gap: 6px;
+    flex-direction: column;
   }
   #webgl-diag .diag-bake-cell {
     display: flex;
-    flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
   }
-  #webgl-diag .diag-bake-cell img {
-    width: 100px; height: 100px;
+  #webgl-diag .diag-bake-cell .preview {
+    width: 56px; height: 56px;
     background: #02030a;
     border: 1px solid var(--border);
+    flex-shrink: 0;
     image-rendering: pixelated;
-    cursor: zoom-in;
   }
-  #webgl-diag .diag-bake-cell .lbl {
-    font-size: 8px;
-    color: var(--muted);
-    letter-spacing: 0.15em;
+  #webgl-diag .diag-bake-cell button {
+    flex: 1;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: left;
+  }
+  #webgl-diag .diag-bake-cell button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(124, 247, 255, 0.06);
   }
 
   /* ============== Title bar (shared across screens) ============== */
@@ -1230,6 +1250,10 @@
     <div id="webgl-diag-rows"></div>
     <div class="diag-bake-strip">
       <div class="diag-bake-title">Per-glyph atlas bake test</div>
+      <div class="diag-bake-hint">
+        Open each tile in a <b>new tab</b> — that's the clean test (no page CSS / blend-mode / transforms).
+        Fat halo = bake works. Tight halo or none = shadowBlur isn't spreading.
+      </div>
       <div class="diag-bake-row" id="webgl-diag-bake"></div>
     </div>
   </div>
@@ -2005,14 +2029,15 @@ resize();
       const url = bakeTile('X', 180, 100, 60, passes); // hue=180 (cyan), sat=100, light=60
       const cell = document.createElement('div');
       cell.className = 'diag-bake-cell';
-      const img = document.createElement('img');
-      img.src = url;
-      img.title = `${name} profile bake — click to open full size`;
-      img.addEventListener('click', () => window.open(url, '_blank'));
-      const lbl = document.createElement('span');
-      lbl.className = 'lbl';
-      lbl.textContent = name;
-      cell.appendChild(img); cell.appendChild(lbl);
+      const preview = document.createElement('img');
+      preview.className = 'preview';
+      preview.src = url;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = `Open ${name} →`;
+      btn.title = `Opens the ${name}-profile bake tile in a new tab as a raw PNG`;
+      btn.addEventListener('click', () => window.open(url, '_blank', 'noopener'));
+      cell.appendChild(preview); cell.appendChild(btn);
       host.appendChild(cell);
     }
   }
