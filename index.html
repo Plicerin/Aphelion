@@ -1843,9 +1843,15 @@ const glyphAtlas = {
   profile: 'normal',
 
   PROFILES: {
-    tight:  { passes: [{blur:1, alpha:0.62}, {blur:3, alpha:0.55}],                                                  haloRadius: 6  },
-    normal: { passes: [{blur:1, alpha:0.62}, {blur:3, alpha:0.55}, {blur:8, alpha:0.45}],                            haloRadius: 14 },
-    wide:   { passes: [{blur:1, alpha:0.62}, {blur:3, alpha:0.55}, {blur:8, alpha:0.45}, {blur:20, alpha:0.35}],     haloRadius: 26 },
+    // Each profile bakes a stack of progressive blur passes into the
+    // glyph tile. Passes accumulate additively under 'lighter'
+    // compositing, so the cumulative-alpha column dominates the
+    // perceived halo brightness; tile-pixel size is haloRadius*2 + cell.
+    // Wider passes are essential — at <8px blur the halo barely
+    // extends past the character and reads as "outline", not "glow".
+    tight:  { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.80}],                                                                                  haloRadius: 8  },
+    normal: { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.70}, {blur:16, alpha:0.55}],                                     haloRadius: 28 },
+    wide:   { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.75}, {blur:18, alpha:0.65}, {blur:32, alpha:0.50}],              haloRadius: 50 },
   },
 
   setProfile(p){
@@ -1894,11 +1900,12 @@ const glyphAtlas = {
     sharpCtx.fillStyle = `hsl(${hue}, ${sat}%, ${lightness}%)`;
     sharpCtx.fillText(ch, center, center);
 
-    // Halo source — slightly brighter and more saturated so the bloom
-    // reads as "glow", not "blurred copy".
+    // Halo source — more saturated and only a touch brighter than the
+    // sharp character. Same lightness keeps the halo coloured rather
+    // than washing out toward white when the blurs stack additively.
     const [bright, brightCtx] = makeTile();
-    const glowSat   = Math.min(100, sat + 5);
-    const glowLight = Math.min(95,  lightness + 18);
+    const glowSat   = Math.min(100, sat + 12);
+    const glowLight = Math.min(78,  lightness + 6);
     brightCtx.fillStyle = `hsl(${hue}, ${glowSat}%, ${glowLight}%)`;
     brightCtx.fillText(ch, center, center);
 
@@ -2031,7 +2038,7 @@ function renderLayers(layers, cell, cols, rows, W, H){
     }
     ctx.globalCompositeOperation = 'lighter';
     ctx.filter = 'blur(30px)';
-    ctx.globalAlpha = Math.min(1, glowMul * 0.55);
+    ctx.globalAlpha = Math.min(1, glowMul * 0.85);
     ctx.drawImage(atmos.canvas, 0, 0, W, H);
     ctx.filter = 'none';
     ctx.globalAlpha = 1;
