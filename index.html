@@ -1823,183 +1823,91 @@ addEventListener('resize', resize);
 resize();
 
 /**
- * Glyph atlas — per-character pre-rendered sprites with glow baked in.
+ * Per-layer bucket bloom.
  *
- * This mirrors Effulgence's actual rendering technique (the author has
- * mentioned in dev posts that glow lives inside the font texture). Each
- * unique (char, hue, sat, brightness, cell, profile) gets a tiny tile
- * with its halo already computed; frame rendering then becomes a
- * stream of drawImage calls. Halos can't merge across neighbouring
- * cells the way a global blur pass does — which is exactly the
- * "every glyph keeps its identity even at full bloom" property we want.
+ * For each layer, characters are written sharp to the main canvas
+ * AND brighter to a per-layer offscreen bucket. After all cells are
+ * laid down, every layer's bucket is blurred and composited back
+ * onto the main canvas with 'lighter' (additive) compositing,
+ * accumulating progressively wider haloes.
  *
- * The bloom profile selects how many blur passes get baked in:
- *   tight  — sharp core only, minimal halo
- *   normal — core + medium halo (default)
- *   wide   — core + medium + broad ambient halo
+ * Each layer picks a bloomProfile that selects which blur passes
+ * get applied:
+ *   tight        — wireframes / instruments (no blob into adjacent cells)
+ *   normal       — default for stars, dust, anchor, chart layers
+ *   atmospheric  — planet, sun (wide ambient bleed across cells)
+ *
+ * This is the original bloom approach (proven to render visible glow
+ * in every browser the project's been tested in) with the per-layer
+ * profile added so that wide blurs only apply to layers that
+ * actually want them, fixing the radar-dish-blob problem that drove
+ * the earlier atlas detour.
  */
-const glyphAtlas = {
-  cache: new Map(),
-  profile: 'normal',
-
-  PROFILES: {
-    // Each profile bakes a stack of progressive blur passes into the
-    // glyph tile. Passes accumulate additively under 'lighter'
-    // compositing, so the cumulative-alpha column dominates the
-    // perceived halo brightness; tile-pixel size is haloRadius*2 + cell.
-    // Wider passes are essential — at <8px blur the halo barely
-    // extends past the character and reads as "outline", not "glow".
-    tight:  { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.80}],                                                                                  haloRadius: 8  },
-    normal: { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.70}, {blur:16, alpha:0.55}],                                     haloRadius: 28 },
-    wide:   { passes: [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.75}, {blur:18, alpha:0.65}, {blur:32, alpha:0.50}],              haloRadius: 50 },
-  },
-
-  setProfile(p){
-    if(p === this.profile || !this.PROFILES[p]) return;
-    this.profile = p;
-    this.cache.clear();
-  },
-
-  clear(){ this.cache.clear(); },
-
-  // 5-step lightness bucketing keeps the cache small without
-  // visibly degrading the brightness ramp.
-  bucket(l){ return Math.round(Math.max(20, Math.min(95, l)) / 5) * 5; },
-
-  get(ch, hue, sat, lightness, cell){
-    const lb = this.bucket(lightness);
-    const key = ch + '|' + (hue|0) + '|' + (sat|0) + '|' + lb + '|' + cell + '|' + this.profile;
-    let entry = this.cache.get(key);
-    if(!entry){
-      entry = this.build(ch, hue, sat, lb, cell);
-      this.cache.set(key, entry);
-    }
-    return entry;
-  },
-
-  build(ch, hue, sat, lightness, cell){
-    const prof = this.PROFILES[this.profile];
-    const tileSize = Math.ceil(cell + prof.haloRadius * 2);
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const dim = Math.ceil(tileSize * dpr);
-    const center = tileSize / 2;
-
-    const makeTile = ()=>{
-      const c = document.createElement('canvas');
-      c.width = dim; c.height = dim;
-      const cx = c.getContext('2d');
-      cx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      cx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
-      cx.textBaseline = 'middle';
-      cx.textAlign = 'center';
-      return [c, cx];
-    };
-
-    // Sharp character — drawn at full opacity over the halo.
-    const [sharp, sharpCtx] = makeTile();
-    sharpCtx.fillStyle = `hsl(${hue}, ${sat}%, ${lightness}%)`;
-    sharpCtx.fillText(ch, center, center);
-
-    // Halo tile via shadowBlur — a native canvas primitive that
-    // guarantees a Gaussian-blurred glow around drawn pixels in every
-    // browser, no DPR or filter-pipeline quirks. Stacking fillText
-    // calls with progressively larger shadowBlur radii under 'lighter'
-    // compositing replicates the CSS text-shadow neon recipe.
-    //
-    // Colour is varied across passes the same way classic neon-text
-    // CSS does: the tight inner passes are bright and near-white
-    // (the "hot tube core"), the wider outer passes are the saturated
-    // halo colour. Without that gradient the glow reads as just one
-    // big coloured smear; with it, characters look like glowing tubes.
-    //
-    // The character core in this tile gets covered by sprite.sharp at
-    // draw time, so only the spreading shadow matters visually.
-    const [glow, glowCtx] = makeTile();
-    const haloSat   = Math.min(100, sat + 12);
-    const haloLight = Math.min(72,  lightness + 4);
-    glowCtx.globalCompositeOperation = 'lighter';
-    const N = prof.passes.length;
-    for(let i = 0; i < N; i++){
-      const p = prof.passes[i];
-      const t = N === 1 ? 1 : i / (N - 1);   // 0 at tight core, 1 at wide halo
-      const passSat   = Math.round(haloSat * t + 25 * (1 - t));
-      const passLight = Math.round(haloLight * t + 92 * (1 - t));
-      const passColor = `hsl(${hue}, ${passSat}%, ${passLight}%)`;
-      glowCtx.fillStyle = passColor;
-      glowCtx.shadowColor = passColor;
-      glowCtx.shadowBlur = p.blur;
-      glowCtx.globalAlpha = p.alpha;
-      glowCtx.fillText(ch, center, center);
-    }
-    glowCtx.shadowBlur = 0;
-    glowCtx.globalAlpha = 1;
-    glowCtx.globalCompositeOperation = 'source-over';
-
-    return { sharp, glow, tileSize, half: center };
-  },
-};
-
-/**
- * Render the per-layer intensity grids as glowing ASCII.
- * `layers` is [{ name, grid, color, chars?, bloomMul?, atmospheric? }, ...].
- * Picks brightest layer per cell and composites two passes from the
- * glyph atlas: per-glyph halos (additive, scaled by the glow slider
- * and per-layer bloomMul) and sharp characters on top.
- *
- * Layers tagged atmospheric:true also contribute to one wide-blur
- * haze pass at the end — this is the soft ambient bleed you see
- * around the planet/sun in Effulgence's reference frames. Wireframe
- * layers don't tag, so they stay crisp instead of blobbing.
- */
-let _atmosBucket = null;
-function getAtmosphericBucket(W, H){
+const _bloomBuckets = {};
+function getBloomBucket(name){
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.max(1, Math.floor(W * dpr));
-  const h = Math.max(1, Math.floor(H * dpr));
-  if(!_atmosBucket || _atmosBucket.canvas.width !== w || _atmosBucket.canvas.height !== h){
+  const w = Math.max(1, stage.width || Math.floor(innerWidth * dpr));
+  const h = Math.max(1, stage.height || Math.floor(innerHeight * dpr));
+  if(!_bloomBuckets[name] || _bloomBuckets[name].canvas.width !== w || _bloomBuckets[name].canvas.height !== h){
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     const cx = c.getContext('2d');
     cx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    _atmosBucket = { canvas: c, ctx: cx };
+    _bloomBuckets[name] = { canvas: c, ctx: cx };
   }
-  return _atmosBucket;
+  return _bloomBuckets[name];
 }
+
+const BLOOM_PROFILES = {
+  tight: [
+    { blur:  1, alpha: 0.65 },
+    { blur:  3, alpha: 0.50 },
+  ],
+  normal: [
+    { blur:  1, alpha: 0.65 },
+    { blur:  3, alpha: 0.55 },
+    { blur:  8, alpha: 0.45 },
+    { blur: 16, alpha: 0.30 },
+  ],
+  atmospheric: [
+    { blur:  1, alpha: 0.65 },
+    { blur:  3, alpha: 0.55 },
+    { blur:  8, alpha: 0.50 },
+    { blur: 24, alpha: 0.40 },
+    { blur: 56, alpha: 0.30 },
+  ],
+};
+
+// Glow-slider UI state. Profile selection is a global blur-radius
+// scale applied on top of the per-layer profiles — tight pinches
+// every halo inward, wide stretches every halo outward, normal
+// leaves them as profile-defined. Kept on the same object the UI
+// already binds to so the existing slider/picker code keeps working.
+const glyphAtlas = {
+  profile: 'normal',
+  PROFILES: { tight: 0.55, normal: 1.0, wide: 1.5 },
+  setProfile(p){ if(this.PROFILES[p]) this.profile = p; },
+  clear(){ /* no per-glyph cache anymore — settings only */ },
+};
 
 function renderLayers(layers, cell, cols, rows, W, H){
   const glowMul = game.glowMul ?? 0.75;
+  const blurScale = glyphAtlas.PROFILES[glyphAtlas.profile] || 1;
 
-  // Halo pass — per-glyph atlas haloes, additive blending so adjacent
-  // haloes brighten their shared edge. Skipped when glow is at zero.
-  if(glowMul > 0.01){
-    ctx.globalCompositeOperation = 'lighter';
-    for(let gy=0;gy<rows;gy++){
-      for(let gx=0;gx<cols;gx++){
-        const idx = gy*cols + gx;
-        let bestV = 0, bestL = null;
-        for(const L of layers){
-          if(L.grid[idx] > bestV){ bestV = L.grid[idx]; bestL = L; }
-        }
-        if(bestV < 0.06 || !bestL) continue;
-        const ch = (bestL.chars && bestL.chars[idx])
-          || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
-        const c = bestL.color;
-        const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
-        const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-        const sprite = glyphAtlas.get(ch, c.h + hueDelta, c.s, light, cell);
-        const layerMul = bestL.bloomMul || 1;
-        ctx.globalAlpha = Math.min(1, glowMul * layerMul);
-        ctx.drawImage(sprite.glow,
-          gx*cell + cell/2 - sprite.half,
-          gy*cell + cell/2 - sprite.half,
-          sprite.tileSize, sprite.tileSize);
-      }
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = 1;
+  // Reset and prepare a bucket per layer.
+  for(const L of layers){
+    const b = getBloomBucket(L.name);
+    b.ctx.clearRect(0, 0, W, H);
+    b.ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
+    b.ctx.textBaseline = 'middle';
+    b.ctx.textAlign = 'center';
   }
+  ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
 
-  // Sharp character pass — drawn over the haloes at full opacity.
+  // Cell pass: sharp character on the main canvas, brighter character
+  // on the layer's bucket (the bucket is the bloom source).
   for(let gy=0;gy<rows;gy++){
     for(let gx=0;gx<cols;gx++){
       const idx = gy*cols + gx;
@@ -2012,48 +1920,33 @@ function renderLayers(layers, cell, cols, rows, W, H){
         || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
       const c = bestL.color;
       const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
+      const hue = c.h + hueDelta;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-      const sprite = glyphAtlas.get(ch, c.h + hueDelta, c.s, light, cell);
-      ctx.drawImage(sprite.sharp,
-        gx*cell + cell/2 - sprite.half,
-        gy*cell + cell/2 - sprite.half,
-        sprite.tileSize, sprite.tileSize);
+      const x = gx*cell + cell/2, y = gy*cell + cell/2;
+
+      ctx.fillStyle = `hsl(${hue}, ${c.s}%, ${light}%)`;
+      ctx.fillText(ch, x, y);
+
+      const b = getBloomBucket(bestL.name);
+      b.ctx.fillStyle = `hsl(${hue}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
+      b.ctx.fillText(ch, x, y);
     }
   }
 
-  // Atmospheric haze — ONE wide-blur pass over a bucket containing
-  // only layers tagged atmospheric:true. The bucket gathers the
-  // brightest atmospheric character at each cell, independent of
-  // who won the visible-pass selection, so the haze comes through
-  // even where wireframes overlap a planet/sun.
-  const hasAtmos = glowMul > 0.01 && layers.some(L => L.atmospheric);
-  if(hasAtmos){
-    const atmos = getAtmosphericBucket(W, H);
-    atmos.ctx.clearRect(0, 0, W, H);
-    atmos.ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
-    atmos.ctx.textBaseline = 'middle';
-    atmos.ctx.textAlign = 'center';
-    for(let gy=0;gy<rows;gy++){
-      for(let gx=0;gx<cols;gx++){
-        const idx = gy*cols + gx;
-        let bestV = 0, bestL = null;
-        for(const L of layers){
-          if(L.atmospheric && L.grid[idx] > bestV){ bestV = L.grid[idx]; bestL = L; }
-        }
-        if(bestV < 0.10 || !bestL) continue;
-        const ch = (bestL.chars && bestL.chars[idx])
-          || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
-        const c = bestL.color;
-        const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
-        const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-        atmos.ctx.fillStyle = `hsl(${c.h + hueDelta}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
-        atmos.ctx.fillText(ch, gx*cell + cell/2, gy*cell + cell/2);
+  // Bloom pass: per-layer profile, additive composite.
+  if(glowMul > 0.01){
+    ctx.globalCompositeOperation = 'lighter';
+    for(const L of layers){
+      const b = getBloomBucket(L.name);
+      if(!b.canvas.width || !b.canvas.height) continue;
+      const profile = BLOOM_PROFILES[L.bloomProfile] || BLOOM_PROFILES.normal;
+      const layerMul = L.bloomMul || 1;
+      for(const p of profile){
+        ctx.filter = `blur(${p.blur * blurScale}px)`;
+        ctx.globalAlpha = Math.min(1, p.alpha * layerMul * glowMul);
+        ctx.drawImage(b.canvas, 0, 0, W, H);
       }
     }
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.filter = 'blur(30px)';
-    ctx.globalAlpha = Math.min(1, glowMul * 0.85);
-    ctx.drawImage(atmos.canvas, 0, 0, W, H);
     ctx.filter = 'none';
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
@@ -2607,9 +2500,9 @@ function blockChar(v){
    per-cell character grid, and a bloom multiplier. The renderLayers
    compositor reads chars[idx] when set; falls back to the brightness
    ramp otherwise. */
-function makeFlightLayer(name, color, cell, cols, rows, bloomMul = 1, atmospheric = false){
+function makeFlightLayer(name, color, cell, cols, rows, bloomMul = 1, bloomProfile = 'normal'){
   return {
-    name, color, cell, cols, rows, bloomMul, atmospheric,
+    name, color, cell, cols, rows, bloomMul, bloomProfile,
     grid: new Float32Array(cols * rows),
     chars: new Array(cols * rows).fill(null),
     // Per-cell hue offset in degrees (-128..+127). Lets the renderer
@@ -2751,25 +2644,27 @@ function renderFlight(state, theme, dt){
   /* ============================================================
      LAYER ALLOCATION (world chunky, instruments fine)
      ============================================================ */
-  const lStars     = makeFlightLayer('stars',     resolveColor(theme.hues.system),   wCell, wCols, wRows);
-  // Sun + planet are atmospheric — they opt into the wide haze pass
-  // that gives them the soft ambient bleed. Wireframe layers (radar,
-  // hull, instruments) don't tag, so they stay crisp.
-  const lSun       = makeFlightLayer('sun',       resolveColor(theme.hues.warn),     wCell, wCols, wRows, 1.4, true);
+  const lStars     = makeFlightLayer('stars',     resolveColor(theme.hues.system),   wCell, wCols, wRows, 1.0, 'normal');
+  // Sun + planet use the 'atmospheric' bloom profile — wider blur
+  // passes that give them the soft ambient bleed reference frames
+  // show. Wireframe layers (hull, frame, dash, status) use 'tight'
+  // which restricts the radar dish / cockpit lines to narrow halos
+  // so they don't blob into solid shapes.
+  const lSun       = makeFlightLayer('sun',       resolveColor(theme.hues.warn),     wCell, wCols, wRows, 1.4, 'atmospheric');
   // Planet renders at world cells (wCell, ~14 px). Higher density
   // (iCell) made glyphs look packed solid and tanked GPU; coarse
-  // cells leave breathing room and let biome variety read.
-  const lPlanet    = makeFlightLayer('planet',    resolveColor(theme.hues.planet),   wCell, wCols, wRows, 1.6, true);
-  const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     wCell, wCols, wRows, 1.4, true);
-  const lDust      = makeFlightLayer('dust',      resolveColor(theme.hues.dust),     wCell, wCols, wRows);
-  const lAnchor    = makeFlightLayer('anchor',    resolveColor(theme.hues.selected), wCell, wCols, wRows);
+  // cells leave breathing room.
+  const lPlanet    = makeFlightLayer('planet',    resolveColor(theme.hues.planet),   wCell, wCols, wRows, 1.6, 'atmospheric');
+  const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     wCell, wCols, wRows, 1.4, 'atmospheric');
+  const lDust      = makeFlightLayer('dust',      resolveColor(theme.hues.dust),     wCell, wCols, wRows, 1.0, 'normal');
+  const lAnchor    = makeFlightLayer('anchor',    resolveColor(theme.hues.selected), wCell, wCols, wRows, 1.0, 'normal');
   // NPC hull renders at fine cells (instrument scale) but is part of the
   // world pass — it draws BEFORE the cockpit mask so ships are visible
-  // only through the canopy.
-  const lHull      = makeFlightLayer('hull',      resolveColor(theme.hues.hull),     iCell, iCols, iRows);
-  const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows);
-  const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows);
-  const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows);
+  // only through the canopy. Tight bloom keeps the wireframe readable.
+  const lHull      = makeFlightLayer('hull',      resolveColor(theme.hues.hull),     iCell, iCols, iRows, 1.0, 'tight');
+  const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows, 1.0, 'tight');
+  const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows, 1.0, 'tight');
+  const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows, 1.0, 'tight');
 
   /* ---- Planet occluder (computed up-front so subsequent layers can
      skip cells that fall behind the planet's silhouette). ----
