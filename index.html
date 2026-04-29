@@ -855,6 +855,26 @@
   }
   #open-chart-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+  /* "Back to Flight" button visible in chart. Positioned to the left
+     of the galaxy tabs so it doesn't fight them for space. */
+  #close-chart-btn {
+    position: fixed;
+    top: 14px; right: 264px;
+    z-index: 7;
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  #close-chart-btn:hover { border-color: var(--accent); color: var(--accent); }
+
   /* ============== Legend (per-screen help text) ============== */
   .legend {
     position: fixed;
@@ -1019,10 +1039,11 @@
     <div id="hMassLock" hidden><span class="v">⚠ MASS-LOCKED</span></div>
   </div>
   <button id="open-chart-btn" class="show-flight" type="button">◤ Galactic Chart</button>
+  <button id="close-chart-btn" class="show-chart" type="button">◤ Back to Flight</button>
 
   <!-- Legends -->
   <div class="legend chart-legend">
-    MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY · <strong>ENTER</strong> JUMP
+    MOVE MOUSE OR <strong>ARROWS</strong> · <strong>1-8</strong> CHANGE GALAXY · <strong>ENTER</strong> JUMP · <strong>ESC</strong> BACK
   </div>
   <div class="legend flight-legend">
     <strong>W A S D</strong> PITCH/YAW · <strong>Q E</strong> ROLL<br>
@@ -1587,6 +1608,11 @@ function reduce(state, action){
       return { ...state, screen:'flight', dockingT: 0, ship: INITIAL_SHIP };
     case 'open-chart':
       return { ...state, screen:'chart' };
+    case 'close-chart':
+      // Return to flight if there's a current system to be in. If not
+      // (shouldn't normally happen), stay on the chart so the player
+      // isn't stranded with no screen.
+      return state.currentSystemSeed ? { ...state, screen:'flight' } : state;
     case 'set-galaxy':
       return { ...state, galaxyIdx:action.galaxyIdx, selectedSystemSeed:null };
   }
@@ -3636,6 +3662,9 @@ addEventListener('keydown', (e)=>{
         cancelCountdown();
       } else if(chartLocked){
         chartLocked = null;
+      } else {
+        // Nothing to cancel — close the chart and return to flight.
+        dispatch({ type:'close-chart' });
       }
     }
   }
@@ -3742,6 +3771,11 @@ document.getElementById('target-flyout-jump').addEventListener('click', (e)=>{
 // Open chart from flight
 document.getElementById('open-chart-btn').addEventListener('click', ()=>{
   dispatch({ type:'open-chart' });
+});
+
+// Close chart and return to flight
+document.getElementById('close-chart-btn').addEventListener('click', ()=>{
+  dispatch({ type:'close-chart' });
 });
 
 // Jump-denied flash. Creates an ephemeral DOM node that auto-removes
