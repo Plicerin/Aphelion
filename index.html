@@ -2466,8 +2466,11 @@ function renderFlight(state, theme, dt){
      ============================================================ */
   const lStars     = makeFlightLayer('stars',     resolveColor(theme.hues.system),   wCell, wCols, wRows);
   const lSun       = makeFlightLayer('sun',       resolveColor(theme.hues.warn),     wCell, wCols, wRows, 1.4);
-  const lPlanet    = makeFlightLayer('planet',    resolveColor(theme.hues.planet),   wCell, wCols, wRows, 1.6);
-  const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     wCell, wCols, wRows, 1.4);
+  // Planet renders at fine cells (iCell, ~7 px) for 4x the resolution.
+  // wCell would only give ~22 cells across a typical planet at medium
+  // range; iCell gives ~44, enough for biome features to read.
+  const lPlanet    = makeFlightLayer('planet',    resolveColor(theme.hues.planet),   iCell, iCols, iRows, 1.6);
+  const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     iCell, iCols, iRows, 1.4);
   const lDust      = makeFlightLayer('dust',      resolveColor(theme.hues.dust),     wCell, wCols, wRows);
   const lAnchor    = makeFlightLayer('anchor',    resolveColor(theme.hues.selected), wCell, wCols, wRows);
   // NPC hull renders at fine cells (instrument scale) but is part of the
@@ -2524,7 +2527,11 @@ function renderFlight(state, theme, dt){
     }
   }
 
-  /* ---- WORLD: planet (filled disc, sphere-projected, rotating) ---- */
+  /* ---- WORLD: planet (filled disc, sphere-projected, rotating) ----
+     Renders at fine cells (iCell) — same on-screen size as before but
+     with ~4x the cell density so biome features and sub-cell sampling
+     read more clearly. Same world-pass position (drawn before the
+     cockpit mask) so it's visible only through the canopy. */
   if(systemBodies){
     const pWorld = [
       systemBodies.planet.pos[0] - state.ship.position[0],
@@ -2535,8 +2542,8 @@ function renderFlight(state, theme, dt){
     if(cam[2] > 0.5){
       const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
       const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-      const cxc = px / wCell, cyc = py / wCell;
-      const rc = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / wCell;
+      const cxc = px / iCell, cyc = py / iCell;
+      const rc = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / iCell;
       if(rc > 1.5){
         // Sphere-projected biome rendering with 2x2 sub-cell sampling.
         // Per cell:
@@ -2592,7 +2599,7 @@ function renderFlight(state, theme, dt){
             // brighter biomes glow more, darker ones recede).
             const v = (0.45 + avgLight * 0.32 + (info.brightness - 0.5) * 0.4) * avgEdge;
             if(v < 0.18) continue;
-            if(gx < 0 || gx >= wCols || gy < 0 || gy >= wRows) continue;
+            if(gx < 0 || gx >= iCols || gy < 0 || gy >= iRows) continue;
 
             // Glyph from biome palette, picked by hashed (lat, lon) so
             // each surface point shows the same character every frame.
@@ -2604,7 +2611,7 @@ function renderFlight(state, theme, dt){
             // -> accent hue (warm). Gives the planet two-color contrast
             // approximating Effulgence's vertex-color biomes.
             const target = info.isWater ? lPlanet : lPlanetAcc;
-            const idx = gy * wCols + gx;
+            const idx = gy * iCols + gx;
             if(v > target.grid[idx]){
               target.grid[idx] = v;
               target.chars[idx] = ch;
@@ -2617,10 +2624,10 @@ function renderFlight(state, theme, dt){
           const a = (i / limbSteps) * Math.PI * 2;
           const gx = Math.round(cxc + Math.cos(a) * rc);
           const gy = Math.round(cyc + Math.sin(a) * rc);
-          if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
+          if(gx<0||gx>=iCols||gy<0||gy>=iRows) continue;
           const lightDot = -Math.cos(a)*0.7 - Math.sin(a)*0.7;
           const v = 0.7 + lightDot*0.3;
-          const idx = gy*wCols+gx;
+          const idx = gy*iCols+gx;
           if(v > lPlanet.grid[idx]){
             lPlanet.grid[idx] = v;
             lPlanet.chars[idx] = slopeChar(-Math.sin(a), Math.cos(a));
@@ -2629,9 +2636,9 @@ function renderFlight(state, theme, dt){
       } else if(rc > 0.3){
         // Distant planet — single bright pixel.
         const cx = Math.round(cxc), cy = Math.round(cyc);
-        if(cx>=0&&cx<wCols&&cy>=0&&cy<wRows){
-          lPlanet.grid[cy*wCols+cx] = 0.85;
-          lPlanet.chars[cy*wCols+cx] = '*';
+        if(cx>=0&&cx<iCols&&cy>=0&&cy<iRows){
+          lPlanet.grid[cy*iCols+cx] = 0.85;
+          lPlanet.chars[cy*iCols+cx] = '*';
         }
       }
     }
@@ -3071,12 +3078,14 @@ function renderFlight(state, theme, dt){
   /* ============================================================
      COMPOSITE — world first, then mask, then instruments on top.
      ============================================================ */
-  renderLayers([lStars, lSun, lPlanet, lPlanetAcc, lAnchor, lDust], wCell, wCols, wRows, W, H);
+  // World-coarse pass — atmospheric / particulate stuff that benefits
+  // from chunky cells (stars, sun glow, dust streaks, anchor signal).
+  renderLayers([lStars, lSun, lAnchor, lDust], wCell, wCols, wRows, W, H);
 
-  // NPC hulls render at fine cells (instrument scale) but BEFORE the
-  // cockpit mask so they're visible only through the canopy. Wireframes
-  // need the precision; chunky world cells make them blocky.
-  renderLayers([lHull], iCell, iCols, iRows, W, H);
+  // World-fine pass — geometry that needs precision: NPC hull and the
+  // planet's biome surface. Both render BEFORE the cockpit mask so
+  // they're visible only through the canopy.
+  renderLayers([lPlanet, lPlanetAcc, lHull], iCell, iCols, iRows, W, H);
 
   // Cockpit mask: fill outside-the-canopy with solid black so the
   // instruments aren't fighting bright world content for legibility.
