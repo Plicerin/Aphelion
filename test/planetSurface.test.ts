@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { BIOMES, biomeAt, biomeInfoAt, type Biome } from '../src/sim/planetSurface';
+import { BIOMES, biomeAt, biomeInfoAt, biomePaletteForSeed, biomeHueShiftForSeed, type Biome } from '../src/sim/planetSurface';
 import type { SeedTriple } from '../src/types';
 
 const SEEDS: readonly SeedTriple[] = [
@@ -22,10 +22,12 @@ describe('BIOMES table', () => {
     for (const k of ALL) expect(BIOMES[k]).toBeDefined();
   });
 
-  it('every biome has a non-empty glyph palette', () => {
+  it('every biome has a non-empty pool with paletteSize <= pool length', () => {
     for (const k of ALL) {
-      expect(BIOMES[k].glyphs.length).toBeGreaterThan(0);
-      for (const g of BIOMES[k].glyphs) {
+      expect(BIOMES[k].pool.length).toBeGreaterThan(0);
+      expect(BIOMES[k].paletteSize).toBeGreaterThan(0);
+      expect(BIOMES[k].paletteSize).toBeLessThanOrEqual(BIOMES[k].pool.length);
+      for (const g of BIOMES[k].pool) {
         expect(typeof g).toBe('string');
         expect(g.length).toBeGreaterThan(0);
       }
@@ -110,5 +112,80 @@ describe('biomeInfoAt', () => {
     const info = biomeInfoAt([0x1234, 0x5678, 0x9abc], 0.0, 0.0);
     // Must be the same object as BIOMES[<that biome>].
     expect(Object.values(BIOMES)).toContain(info);
+  });
+});
+
+describe('biomePaletteForSeed', () => {
+  const ALL: Biome[] = ['ice', 'forest', 'land', 'ocean', 'deepOcean'];
+
+  it('is deterministic — same (seed, biome) returns the same palette', () => {
+    for (const seed of SEEDS) {
+      for (const k of ALL) {
+        const a = biomePaletteForSeed(seed, k);
+        const b = biomePaletteForSeed(seed, k);
+        expect(a).toEqual(b);
+      }
+    }
+  });
+
+  it('palette length matches BIOMES[biome].paletteSize', () => {
+    for (const seed of SEEDS) {
+      for (const k of ALL) {
+        expect(biomePaletteForSeed(seed, k).length).toBe(BIOMES[k].paletteSize);
+      }
+    }
+  });
+
+  it('every glyph in the palette comes from the biome pool', () => {
+    for (const seed of SEEDS) {
+      for (const k of ALL) {
+        const palette = biomePaletteForSeed(seed, k);
+        for (const g of palette) expect(BIOMES[k].pool).toContain(g);
+      }
+    }
+  });
+
+  it('different seeds yield different palettes for at least one biome', () => {
+    // Sanity check that the seed actually mixes in. With five biomes
+    // and meaningfully different seeds, at least one biome's palette
+    // should differ — otherwise the seed isn't reaching the shuffle.
+    const a = ALL.map(k => biomePaletteForSeed([0x0001, 0x0002, 0x0003], k).join(''));
+    const b = ALL.map(k => biomePaletteForSeed([0xffff, 0xfffe, 0xfffd], k).join(''));
+    let differences = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differences++;
+    expect(differences).toBeGreaterThan(0);
+  });
+});
+
+describe('biomeHueShiftForSeed', () => {
+  const ALL: Biome[] = ['ice', 'forest', 'land', 'ocean', 'deepOcean'];
+
+  it('is deterministic', () => {
+    for (const seed of SEEDS) {
+      for (const k of ALL) {
+        const a = biomeHueShiftForSeed(seed, k);
+        const b = biomeHueShiftForSeed(seed, k);
+        expect(a).toBe(b);
+      }
+    }
+  });
+
+  it('always within ±hueShiftRange', () => {
+    for (const seed of SEEDS) {
+      for (const k of ALL) {
+        const shift = biomeHueShiftForSeed(seed, k);
+        const range = BIOMES[k].hueShiftRange;
+        expect(shift).toBeGreaterThanOrEqual(-range);
+        expect(shift).toBeLessThanOrEqual(range);
+      }
+    }
+  });
+
+  it('different seeds produce different shifts somewhere across biomes', () => {
+    const a = ALL.map(k => biomeHueShiftForSeed([0x0001, 0x0002, 0x0003], k));
+    const b = ALL.map(k => biomeHueShiftForSeed([0xffff, 0xfffe, 0xfffd], k));
+    let differences = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) differences++;
+    expect(differences).toBeGreaterThan(0);
   });
 });

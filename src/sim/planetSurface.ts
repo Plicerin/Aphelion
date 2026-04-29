@@ -22,22 +22,89 @@ import type { SeedTriple } from '../types';
 export type Biome = 'ice' | 'forest' | 'land' | 'ocean' | 'deepOcean';
 
 export interface BiomeInfo {
-  /** Glyph palette this biome draws from. Position-hash picks one. */
-  readonly glyphs: readonly string[];
+  /** Glyph candidate pool. The per-planet palette is a deterministic
+   *  seed-shuffled subset of size `paletteSize`. */
+  readonly pool: readonly string[];
+  /** How many glyphs to pick from the pool for any given planet. */
+  readonly paletteSize: number;
   /** Intrinsic brightness 0..1. Ice bright, deep ocean dim. */
   readonly brightness: number;
   /** True for ocean variants — used by the renderer to route water to
    *  the cool planet hue layer and land to the warm accent layer. */
   readonly isWater: boolean;
+  /** Maximum seed-derived hue offset (degrees, applied symmetrically:
+   *  the actual shift falls in [-hueShiftRange, +hueShiftRange]). */
+  readonly hueShiftRange: number;
 }
 
 export const BIOMES: Readonly<Record<Biome, BiomeInfo>> = {
-  ice:        { glyphs: ['.', "'", '*', ':',  '·'],          brightness: 0.95, isWater: false },
-  forest:     { glyphs: ['#', '%', '&', 'T', '@', 'Y'],        brightness: 0.55, isWater: false },
-  land:       { glyphs: ['=', '+', 'o', 'O', '0', 'D', 'b'],   brightness: 0.75, isWater: false },
-  ocean:      { glyphs: ['~', '-', "'", ',', '.'],             brightness: 0.50, isWater: true  },
-  deepOcean:  { glyphs: ['.', ',', '`', "'"],                  brightness: 0.35, isWater: true  },
+  ice: {
+    pool: ['.', "'", '*', ':', '·', '°', ';', ',', '`', '+', '^', '"'],
+    paletteSize: 5, brightness: 0.95, isWater: false, hueShiftRange: 10,
+  },
+  forest: {
+    pool: ['#', '%', '&', 'T', 'Y', '@', '$', '*', 'R', 'K', 'H', 'B', 'V'],
+    paletteSize: 6, brightness: 0.55, isWater: false, hueShiftRange: 25,
+  },
+  land: {
+    pool: ['=', '+', 'o', 'O', '0', 'D', 'b', '6', '9', 'q', 'p', 'Q', 'a', 'e'],
+    paletteSize: 6, brightness: 0.75, isWater: false, hueShiftRange: 20,
+  },
+  ocean: {
+    pool: ['~', '-', "'", ',', '.', '_', '`', '^', '=', ':'],
+    paletteSize: 5, brightness: 0.50, isWater: true,  hueShiftRange: 15,
+  },
+  deepOcean: {
+    pool: ['.', ',', '`', "'", '_', ':', ';', '°', '^', '"'],
+    paletteSize: 5, brightness: 0.35, isWater: true,  hueShiftRange: 15,
+  },
 };
+
+/** Mix the system seed with the biome name into a 32-bit hash that's
+ *  stable across runs. Used by the palette-shuffle and hue-shift
+ *  helpers below so identical (seed, biome) pairs always agree. */
+function seedBiomeHash(seed: SeedTriple, biome: Biome): number {
+  let h = ((seed[0] * 73856093) ^ (seed[1] * 19349663) ^ (seed[2] * 83492791)) >>> 0;
+  for(let i = 0; i < biome.length; i++){
+    h = Math.imul(h, 31) + biome.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h;
+}
+
+/**
+ * Per-planet biome palette: a deterministic shuffle of the biome's
+ * pool, truncated to `paletteSize`. Two planets with the same seed
+ * pick the same glyphs in the same order; two different seeds will
+ * almost always pick different palettes for the same biome.
+ */
+export function biomePaletteForSeed(seed: SeedTriple, biome: Biome): readonly string[] {
+  const info = BIOMES[biome];
+  const pool = info.pool.slice();
+  const N = info.paletteSize;
+  if(pool.length <= N) return Object.freeze(pool);
+  let s = seedBiomeHash(seed, biome);
+  // Fisher-Yates with an LCG so the shuffle is deterministic from `s`.
+  for(let i = pool.length - 1; i > 0; i--){
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    const j = s % (i + 1);
+    const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+  }
+  return Object.freeze(pool.slice(0, N));
+}
+
+/**
+ * Per-planet, per-biome hue offset in degrees. Lets ice on Lave look
+ * a different temperature from ice on Diso, etc. Always within
+ * ±BIOMES[biome].hueShiftRange.
+ */
+export function biomeHueShiftForSeed(seed: SeedTriple, biome: Biome): number {
+  const info = BIOMES[biome];
+  let s = seedBiomeHash(seed, biome);
+  s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+  const t = (s & 0xffff) / 0x10000;     // [0, 1)
+  return Math.round((t * 2 - 1) * info.hueShiftRange);
+}
 
 /** Latitude (radians) above which we always treat the surface as ice. */
 const POLAR_CAP_LAT = 1.15;

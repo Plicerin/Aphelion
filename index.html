@@ -1560,12 +1560,55 @@ function updateDockingT(currentT, shipPos, shipSpeed, anchorPos, dt, dockRadius)
    per planet cell to pick a glyph + layer; sub-cell sampling smooths
    the brightness transitions. */
 const BIOMES = {
-  ice:        { glyphs: ['.', "'", '*', ':', '·'],            brightness: 0.95, isWater: false },
-  forest:     { glyphs: ['#', '%', '&', 'T', '@', 'Y'],        brightness: 0.55, isWater: false },
-  land:       { glyphs: ['=', '+', 'o', 'O', '0', 'D', 'b'],   brightness: 0.75, isWater: false },
-  ocean:      { glyphs: ['~', '-', "'", ',', '.'],             brightness: 0.50, isWater: true  },
-  deepOcean:  { glyphs: ['.', ',', '`', "'"],                  brightness: 0.35, isWater: true  },
+  ice: {
+    pool: ['.', "'", '*', ':', '·', '°', ';', ',', '`', '+', '^', '"'],
+    paletteSize: 5, brightness: 0.95, isWater: false, hueShiftRange: 10,
+  },
+  forest: {
+    pool: ['#', '%', '&', 'T', 'Y', '@', '$', '*', 'R', 'K', 'H', 'B', 'V'],
+    paletteSize: 6, brightness: 0.55, isWater: false, hueShiftRange: 25,
+  },
+  land: {
+    pool: ['=', '+', 'o', 'O', '0', 'D', 'b', '6', '9', 'q', 'p', 'Q', 'a', 'e'],
+    paletteSize: 6, brightness: 0.75, isWater: false, hueShiftRange: 20,
+  },
+  ocean: {
+    pool: ['~', '-', "'", ',', '.', '_', '`', '^', '=', ':'],
+    paletteSize: 5, brightness: 0.50, isWater: true,  hueShiftRange: 15,
+  },
+  deepOcean: {
+    pool: ['.', ',', '`', "'", '_', ':', ';', '°', '^', '"'],
+    paletteSize: 5, brightness: 0.35, isWater: true,  hueShiftRange: 15,
+  },
 };
+function seedBiomeHash(seed, biome){
+  let h = ((seed[0] * 73856093) ^ (seed[1] * 19349663) ^ (seed[2] * 83492791)) >>> 0;
+  for(let i = 0; i < biome.length; i++){
+    h = Math.imul(h, 31) + biome.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h;
+}
+function biomePaletteForSeed(seed, biome){
+  const info = BIOMES[biome];
+  const pool = info.pool.slice();
+  const N = info.paletteSize;
+  if(pool.length <= N) return pool;
+  let s = seedBiomeHash(seed, biome);
+  for(let i = pool.length - 1; i > 0; i--){
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    const j = s % (i + 1);
+    const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+  }
+  return pool.slice(0, N);
+}
+function biomeHueShiftForSeed(seed, biome){
+  const info = BIOMES[biome];
+  let s = seedBiomeHash(seed, biome);
+  s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+  const t = (s & 0xffff) / 0x10000;
+  return Math.round((t * 2 - 1) * info.hueShiftRange);
+}
 const POLAR_CAP_LAT = 1.15;
 function biomeAt(seed, lat, lon){
   if(Math.abs(lat) > POLAR_CAP_LAT) return 'ice';
@@ -1920,8 +1963,9 @@ function renderLayers(layers, cell, cols, rows, W, H){
         const ch = (bestL.chars && bestL.chars[idx])
           || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
         const c = bestL.color;
+        const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
         const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-        const sprite = glyphAtlas.get(ch, c.h, c.s, light, cell);
+        const sprite = glyphAtlas.get(ch, c.h + hueDelta, c.s, light, cell);
         const layerMul = bestL.bloomMul || 1;
         ctx.globalAlpha = Math.min(1, glowMul * layerMul);
         ctx.drawImage(sprite.glow,
@@ -1946,8 +1990,9 @@ function renderLayers(layers, cell, cols, rows, W, H){
       const ch = (bestL.chars && bestL.chars[idx])
         || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
       const c = bestL.color;
+      const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-      const sprite = glyphAtlas.get(ch, c.h, c.s, light, cell);
+      const sprite = glyphAtlas.get(ch, c.h + hueDelta, c.s, light, cell);
       ctx.drawImage(sprite.sharp,
         gx*cell + cell/2 - sprite.half,
         gy*cell + cell/2 - sprite.half,
@@ -1978,8 +2023,9 @@ function renderLayers(layers, cell, cols, rows, W, H){
         const ch = (bestL.chars && bestL.chars[idx])
           || ramp[Math.min(ramp.length-1, Math.floor(bestV*ramp.length))];
         const c = bestL.color;
+        const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
         const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-        atmos.ctx.fillStyle = `hsl(${c.h}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
+        atmos.ctx.fillStyle = `hsl(${c.h + hueDelta}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
         atmos.ctx.fillText(ch, gx*cell + cell/2, gy*cell + cell/2);
       }
     }
@@ -2545,6 +2591,11 @@ function makeFlightLayer(name, color, cell, cols, rows, bloomMul = 1, atmospheri
     name, color, cell, cols, rows, bloomMul, atmospheric,
     grid: new Float32Array(cols * rows),
     chars: new Array(cols * rows).fill(null),
+    // Per-cell hue offset in degrees (-128..+127). Lets the renderer
+    // shift a layer's base hue per cell — used by the planet so each
+    // biome on each planet picks up a small seed-derived hue jitter,
+    // approximating Effulgence's vertex-color variety.
+    hueShifts: new Int8Array(cols * rows),
   };
 }
 
@@ -2699,12 +2750,39 @@ function renderFlight(state, theme, dt){
   const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows);
   const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows);
 
+  /* ---- Planet occluder (computed up-front so subsequent layers can
+     skip cells that fall behind the planet's silhouette). ----
+     Pixel-space disc + camera-space depth. Anything with greater
+     depth that projects inside the disc is considered hidden. */
+  let planetOccluder = null;
+  if(systemBodies && systemBodies.planet){
+    const pWorld = [
+      systemBodies.planet.pos[0] - state.ship.position[0],
+      systemBodies.planet.pos[1] - state.ship.position[1],
+      systemBodies.planet.pos[2] - state.ship.position[2],
+    ];
+    const pCam = qRotate(invOrient, pWorld);
+    if(pCam[2] > 0.5){
+      const ppx = (pCam[0]*FOV_FLIGHT)/pCam[2] + W/2;
+      const ppy = (-pCam[1]*FOV_FLIGHT)/pCam[2] + H/2;
+      const pr = (systemBodies.planet.radius * FOV_FLIGHT) / pCam[2];
+      if(pr > 1.5) planetOccluder = { x: ppx, y: ppy, r: pr, depth: pCam[2] };
+    }
+  }
+  function occludedByPlanet(sx, sy, depth){
+    if(!planetOccluder) return false;
+    if(depth <= planetOccluder.depth) return false;     // closer than planet
+    const dx = sx - planetOccluder.x, dy = sy - planetOccluder.y;
+    return dx*dx + dy*dy < planetOccluder.r * planetOccluder.r;
+  }
+
   /* ---- WORLD: stars ---- */
   for(const s of stars){
     const cam = qRotate(invOrient, s.pos);
     if(cam[2] < 0.05) continue;
     const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
     const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+    if(occludedByPlanet(px, py, cam[2])) continue;
     const gx = Math.round(px/wCell), gy = Math.round(py/wCell);
     if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
     const idx = gy*wCols+gx;
@@ -2734,6 +2812,12 @@ function renderFlight(state, theme, dt){
           if(d > haloRadius) continue;
           const gx = cx+dx, gy = cy+dy;
           if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
+          // Sun-halo cell occlusion: skip cells whose pixel position
+          // falls behind the planet's disc. Each cell tested
+          // individually so partial occlusion at the planet's limb
+          // looks correct.
+          const sxPx = gx * wCell + wCell/2, syPx = gy * wCell + wCell/2;
+          if(occludedByPlanet(sxPx, syPx, cam[2])) continue;
           const v = Math.exp(-d / Math.max(1, haloRadius*0.4));
           const idx = gy*wCols+gx;
           if(v > lSun.grid[idx]){
@@ -2778,6 +2862,23 @@ function renderFlight(state, theme, dt){
         // via sub-pixel rasterization.
         const driftLng = tSec * 0.18;     // ~35 sec per full rotation
         const seed = systemBodies.planet.sys.seed;
+        // Per-planet biome palettes + hue jitter — picked once per
+        // frame from the seed so every world has a distinct surface
+        // texture and a slightly different hue for each biome.
+        const palettes = {
+          ice:        biomePaletteForSeed(seed, 'ice'),
+          forest:     biomePaletteForSeed(seed, 'forest'),
+          land:       biomePaletteForSeed(seed, 'land'),
+          ocean:      biomePaletteForSeed(seed, 'ocean'),
+          deepOcean:  biomePaletteForSeed(seed, 'deepOcean'),
+        };
+        const hueShifts = {
+          ice:        biomeHueShiftForSeed(seed, 'ice'),
+          forest:     biomeHueShiftForSeed(seed, 'forest'),
+          land:       biomeHueShiftForSeed(seed, 'land'),
+          ocean:      biomeHueShiftForSeed(seed, 'ocean'),
+          deepOcean:  biomeHueShiftForSeed(seed, 'deepOcean'),
+        };
         const subOffsets = [
           [-0.25, -0.25], [+0.25, -0.25], [-0.25, +0.25], [+0.25, +0.25],
         ];
@@ -2820,20 +2921,23 @@ function renderFlight(state, theme, dt){
             if(v < 0.18) continue;
             if(gx < 0 || gx >= wCols || gy < 0 || gy >= wRows) continue;
 
-            // Glyph from biome palette, picked by hashed (lat, lon) so
-            // each surface point shows the same character every frame.
+            // Glyph from this planet's seed-shuffled palette for the
+            // biome, picked by hashed (lat, lon) so each surface point
+            // shows the same character every frame.
             const hashLon = Math.round(lon * 7);
             const hashLat = Math.round(lat * 11);
-            const ch = pPick(hashLon, hashLat, 17, info.glyphs);
+            const ch = pPick(hashLon, hashLat, 17, palettes[biome]);
 
             // Layer routing: water -> primary planet hue (cool), land
-            // -> accent hue (warm). Gives the planet two-color contrast
-            // approximating Effulgence's vertex-color biomes.
+            // -> accent hue (warm). Per-cell hue offset is the biome's
+            // seed-derived shift so two planets with the same biome
+            // mix paint that biome at slightly different temperatures.
             const target = info.isWater ? lPlanet : lPlanetAcc;
             const idx = gy * wCols + gx;
             if(v > target.grid[idx]){
               target.grid[idx] = v;
               target.chars[idx] = ch;
+              target.hueShifts[idx] = hueShifts[biome];
             }
           }
         }
@@ -2876,8 +2980,14 @@ function renderFlight(state, theme, dt){
       if(info.stage !== 'silent'){
         const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
         const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
-        const acx = Math.round(px/wCell), acy = Math.round(py/wCell);
-        drawAnchorStage(lAnchor.grid, acx, acy, wCols, wRows, info, state.dockingT);
+        // Hide the anchor's signal entirely when it's behind the planet
+        // — the station is small enough that a center-point test is
+        // good enough; we won't see the partially occluded edges leak
+        // out from behind a planetary limb.
+        if(!occludedByPlanet(px, py, cam[2])){
+          const acx = Math.round(px/wCell), acy = Math.round(py/wCell);
+          drawAnchorStage(lAnchor.grid, acx, acy, wCols, wRows, info, state.dockingT);
+        }
       }
     }
   }
@@ -2895,6 +3005,7 @@ function renderFlight(state, theme, dt){
     if(cam[2] < 0.5) continue;
     const px = (cam[0]*FOV_FLIGHT)/cam[2] + W/2;
     const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
+    if(occludedByPlanet(px, py, cam[2])) continue;
     const gx = Math.round(px/wCell), gy = Math.round(py/wCell);
     if(gx<0||gx>=wCols||gy<0||gy>=wRows) continue;
     const v = Math.max(0.2, Math.min(1, 1 - cam[2]/DUST_RANGE));
@@ -2966,6 +3077,20 @@ function renderFlight(state, theme, dt){
   let _activeTarget = null;     // populated below for the TARGET disk
   if(systemBodies && systemBodies.npcs){
     for(const npc of systemBodies.npcs){
+      // Center-point occlusion: hide the whole NPC when its origin
+      // sits behind the planet's silhouette. Avoids drawing wraith
+      // wireframes that would otherwise punch through a planet limb.
+      {
+        const cdx = npc.position[0] - state.ship.position[0];
+        const cdy = npc.position[1] - state.ship.position[1];
+        const cdz = npc.position[2] - state.ship.position[2];
+        const cc = qRotate(invOrient, [cdx, cdy, cdz]);
+        if(cc[2] > 0.5){
+          const cpxN = (cc[0]*FOV_FLIGHT)/cc[2] + W/2;
+          const cpyN = (-cc[1]*FOV_FLIGHT)/cc[2] + H/2;
+          if(occludedByPlanet(cpxN, cpyN, cc[2])) continue;
+        }
+      }
       const cosY = Math.cos(npc.yaw), sinY = Math.sin(npc.yaw);
       // Transform every vertex once; cache projected points.
       const tv = WRAITH_BLUEPRINT.vertices.map(v => {
