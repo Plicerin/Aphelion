@@ -1,18 +1,29 @@
 # Aphelion — Handover Document
 
-A briefing for picking up Aphelion development in a new session (Claude Code, Claude Desktop with filesystem MCP, or future you).
+A briefing for picking up Aphelion development in a new session.
 
 ## What Aphelion is
 
-A glowing-ASCII space trading game inspired by Elite (1984) and Effulgence RPG (2025). Single-player, browser-based, ships as a single self-contained HTML file. Clean-room reimplementation — no copyrighted code from the original Elite, just inspiration and the publicly-released ship blueprint data (vertex coordinates, which aren't copyrightable).
+A glowing-ASCII space trading game inspired by Elite (1984) and Effulgence RPG (2025). Single-player, browser-based, ships as a single self-contained HTML file. Clean-room reimplementation — no copyrighted code from the original Elite, just inspiration and the publicly-released ship blueprint data.
 
 The aesthetic conceit: you are receiving fragmented signals from a galaxy too far away to image directly, decoded into glowing characters.
 
 ## Where the project stands
 
-**Pre-alpha. The chart-to-flight game loop works end to end:** explore eight procedural galaxies on a glowing-ASCII chart, click to lock a system as a jump target, see a flyout with the system name and distance, click engage, watch a 3-second countdown, then a hyperspace tunnel transition, then arrive at the destination's sun and planet. Fly around in 6DOF with WASD/QE/Shift. Switch between six visual themes. Save persists across reloads.
+**Pre-alpha. v0.2 combat is done; v0.1 game loop is fully working.** The full play loop now exists end-to-end:
 
-**23 commits on `main`. 78 tests passing across 7 test files.**
+1. Galactic chart → click a system → engage → hyperspace tunnel → arrive at destination
+2. Fly the cockpit, find the trade anchor (replaces Coriolis station — see design notes), hold inside the docking radius
+3. Trade screen: buy/sell 17 commodities, refuel at 5 cr/LY, launch
+4. NPCs in flight: pirates pursue, traders flee, police idle (or pursue if you're wanted)
+5. Combat: SPACE to fire front laser, ships explode, hp drains
+6. Combat rank tracked across reloads (Harmless → Elite, 9 ranks)
+
+**Live at:** `https://plicerin.github.io/Aphelion/`
+
+**272 tests passing across 15 test files. ~50 commits on `main`.**
+
+**Two known bugs are open** — see "Open bugs" section below.
 
 ## Architecture
 
@@ -29,100 +40,235 @@ src/
     vec.ts                 — vector / quaternion math (right-handed, +Z forward)
     ship.ts                — flight model (forward-favored, not strict Newtonian)
     state.ts               — game state reducer for screen transitions
-    save.ts                — localStorage save/load with strict validation
-  render/
-    input.ts               — keyboard input layer (rebindable)
+    save.ts                — localStorage save/load (currently v4)
+    cockpit.ts             — compass / fuel / cabin heat / mass-lock / dockingT
+    anchor.ts              — trade-anchor placement and stage classification
+    trade.ts               — 17 commodities + price model + buy/sell helpers
+    refuel.ts              — refuel pricing + cap (5 cr/LY, whole LY only)
+    blueprints.ts          — 5 ship blueprints (Cobra + 4 NPC types)
+    npc.ts                 — spawnNpcs, stepNpc (pirate pursue / trader flee / police)
+    combat.ts              — laser hit detection, damage, explosions, pirate fire-back, combat rank
+    planetSurface.ts       — biome glyph palettes + per-planet hue jitter
 test/
-  *.test.ts                — 78 tests
+  *.test.ts                — 272 tests
+docs/
+  HANDOVER.md              — this file
+  roadmap.md               — v0.1 → v1.0 milestones
+  bugs.md                  — open bug entries with attempt log
 index.html                 — the game (single-file app, mirrors src/ inline)
 ```
 
-The TS source under `src/` is the canonical version of every module. `index.html` mirrors them inline so the game runs without a build step. When we move to a build pipeline, `index.html` becomes the entry point that imports from `src/`.
+Pure-sim modules under `src/` are the canonical version of every behaviour. `index.html` mirrors them inline so the game runs without a build step. When we move to a build pipeline, `index.html` becomes the entry point that imports from `src/`.
 
-## Key design decisions worth preserving
+## v0.2 work done in this session
 
-**Single-file delivery.** Target: under 200 KB gzipped, ideally under 100 KB. A small homage to the 22 KB original. This means no React, no game engine, no heavy dependencies. Every dependency added needs to justify itself against this constraint.
+### NPC roles + behaviours (`src/sim/npc.ts`)
 
-**Clean-room implementation.** The ship blueprint vertex data is from `bbcelite.com`'s annotated source — that's facts about geometry, not creative expression. Everything else (galaxy generation, descriptions, theme system, flight model, render pipeline) was written from conceptual descriptions, not ported from any specific implementation. Original syllable tables, original grammar productions, original bit-extraction layout for system properties.
+`NpcShip` now carries a `role` (`pirate | police | trader`), `hp`, and `explodingT`. `spawnNpcs(system)` returns 3–5 ships per system with role distribution biased by government:
 
-**Pure simulation, dumb renderer.** The sim layer (`src/sim/`) is pure functions on plain data. No DOM access, no canvas access, no audio. Renderer reads from state and draws. This keeps testing trivial and lets us add things like AI pilots or save replays later without restructuring.
+```
+anarchy        70/00/30  (pirate / police / trader)
+feudal         50/05/45
+multi-gov      30/15/55
+dictatorship   30/20/50
+communist      20/30/50
+confederacy    15/35/50
+democracy      10/35/55
+corporate      05/50/45
+```
 
-**Glowing ASCII pipeline.** Every visible glyph belongs to a "role" (hull, dust, planet, dash, etc.). Themes map roles to colors. The renderer:
-1. Builds an intensity grid per color bucket
-2. For each cell, picks the brightest contributing layer
-3. Draws the glyph at sharp intensity to main canvas + offscreen
-4. Stamps the offscreen back over the canvas with progressive blur in `lighter` blend mode (4 passes: blur 2, 6, 16, 36px)
+`stepNpc(npc, ctx, dt)` is pure — takes `{ playerPos, npcs, playerWanted }`. Pirates yaw toward player and throttle in. Traders find the closest pirate within `TRADER_FLEE_RADIUS=30` and flee opposite. Police pursue + fire when `playerWanted`, otherwise idle. Exploding NPCs return unchanged (no movement during death animation).
 
-**Per-color bloom buckets** are critical. Without them, orange engine glow + cyan hull glow average to muddy beige in the blur. Each color renders to its own offscreen canvas and blooms independently before compositing.
+Tunables (currently dialed down for playability):
+```
+PIRATE_SPEED       5    (vs player max 80)
+PIRATE_TURN_RATE   0.45 (vs player 1.2)
+PIRATE_STAND_OFF   14   (close enough → pirate stops, doesn't ram)
+TRADER_SPEED       7
+TRADER_TURN_RATE   0.4
+```
 
-**Brightest-wins per cell.** When two roles try to write to the same cell, keep the brighter one's color rather than blending. Blending hues in ASCII produces unreadable in-betweens.
+### Combat (`src/sim/combat.ts`)
 
-**Forward-favored flight model.** Velocity bends toward the ship's forward vector at `velocityAlignRate: 4.0`. Strict Newtonian physics in a chase camera is miserable; this gives Elite-style feel without inertial drift.
+Pure functions:
+- `laserTarget(shipPos, shipForward, npcs)` — ray-vs-sphere, returns nearest non-exploding NPC index
+- `applyLaserDamage(npcs, index, dps, dt)` — copy-on-write hp drain; triggers `explodingT` at 0
+- `advanceExplosions(npcs, dt)` — ticks the timer, removes finished ones
+- `pirateIsFiring(npc, playerPos)` — geometry test for pirate firing decision
+- `npcIsFiringOnPlayer(npc, playerPos, playerWanted)` — generalises to police-when-wanted
+- `applyHostileFire(playerHp, npcs, playerPos, playerWanted, dt)` — sums DPS across all firing NPCs
+- `rankForKills(kills)` — maps kill count to rank index 0..8
 
-**Quaternions for orientation.** Avoids gimbal lock, composes cleanly. Renormalize every frame.
+Constants:
+```
+LASER_RANGE         80    (player)
+LASER_DPS           80    (player ttk on 100hp NPC ≈ 1.25s)
+NPC_HIT_RADIUS      2.5
+EXPLOSION_DURATION  1.0s
+PLAYER_MAX_HP       100
+NPC_MAX_HP          100
+NPC_PIRATE_DPS      22    (ttk on player ≈ 4.5s solo)
+NPC_LASER_RANGE     50
+NPC_FIRING_CONE_DOT 0.95  (~18° half-angle)
+WANTED_DURATION     30s
 
-**Deterministic everything.** Same seed → same galaxy → same names → same descriptions → same planet visuals → same arrival positioning. Two players who launch Aphelion fresh see the same starting system (Geka, in galaxy Meris). Save format only stores the seeds, not derived data.
+COMBAT_RANK_THRESHOLDS = [0, 1, 8, 16, 32, 64, 128, 256, 512]
+COMBAT_RANK_NAMES      = [Harmless, Mostly Harmless, Poor, Average, Above Average,
+                          Competent, Dangerous, Deadly, Elite]
+```
 
-**Strict save validation.** Saves are best-effort and never throw. Malformed JSON, wrong shape, out-of-range values, future versions all fall back to a fresh start. Half-loading a corrupted save is the kind of bug that wastes hours later.
+### Refuel (`src/sim/refuel.ts`)
 
-## v0.1 status
+`applyRefuel(fuel, credits, maxFuel)` — buys whole LY up to a full tank or up to what credits afford, returns `{ newFuel, newCredits, bought }`. `refuelCost` previews the cost. `FUEL_PRICE_PER_LY = 5`.
 
-Done:
-- Galaxy generator (8 × 256 systems, deterministic)
-- Galactic chart with click-to-lock + countdown + flyout
-- Goat-soup-style description generator (recursive grammar with weighted templates)
-- Hyperspace tunnel transition
-- First-person cockpit flight (WASD/QE/Shift, dust streaks, cockpit frame, crosshair)
-- Sun and planet rendered in flight on arrival
-- Six themes with persistence (Cyan, Green Phosphor, Amber Monochrome, Cyan & Amber, Magenta Synthwave, Full Color)
-- Save game in localStorage
+### Save format (`src/sim/save.ts`)
 
-Remaining for v0.1:
-- **Coriolis station** — rotating wireframe octagon with docking slot. Visually iconic, gives flight somewhere to go, prerequisite for trade.
-- **Trade screen** — 17 commodities with supply/demand price model. Buy at one station, sell at another based on economy mismatch. Market screen rendered in glowing ASCII.
-- **More ship blueprints** — currently only the Cobra Mk III. Need at least Sidewinder, Mamba, Viper, Python for v0.2 combat.
+Bumped to v4. Fields:
+```
+v1: galaxyIdx, currentSystemSeed
+v2: + cargo, credits, fuel
+v3: + shipHp
+v4: + kills
+```
 
-After v0.1, roadmap progression is in `docs/roadmap.md`.
+Older versions migrate forward with sensible defaults (full hull, zero kills). Validation rejects negative / non-finite numbers.
 
-## Things to push to GitHub when set up
+### UI / render additions (in `index.html`)
 
-The repo is ready to push. The MIT license has a placeholder copyright holder ("Aphelion contributors") that should be replaced with the real author's name.
+- **HUD bottom-right**: SYSTEM, PITCH, YAW, RANK, KILLS, MASS-LOCKED, WANTED, POD (post-respawn invuln countdown).
+- **Mini-bars below scanner**: SPD / ENG / HULL / HEAT. HULL drains in real time, flips to warn colour < 25%.
+- **Radar blips on the scanner ellipse**: `@` for pirates (warn hue + 4-direction halo), `+` for police (status hue + halo), `o` for traders (status hue), `·` for off-range contacts pinned to the edge.
+- **Target disk wireframe + HP bar** on the left holo-disk: when a Wraith is on or near the crosshair, draws the ship blueprint inside the disk + an HP bar that drains as you fire.
+- **Fire flash** at the crosshair while SPACE is held (warm + atmospheric bloom).
+- **Explosion render** — `drawExplosion` paints a hot-core flash + expanding debris ring + ember halo into the new `lExplosion` layer.
+- **Incoming-fire indicators** — every firing NPC puts a `!` on a centred ellipse around the canopy at its player-local bearing.
+- **WebGL diagnostics panel** (cockpit only, left of the reticle) — shows GPU vendor / renderer / extension support; intended for diagnosing the parked glow bug.
+- **Bake-test diagnostic** — three buttons that open per-profile glow-tile PNGs in new tabs (workaround for browsers blocking `data:` URL navigation: `window.open` with HTML wrapper containing `<img>`).
+- **Refuel button** on the docked overlay — disabled when tank's full or you can't afford 1 LY.
 
-Recommended first repo settings after creation:
-- Enable GitHub Pages (source: `main`, root folder) for a live `https://USER.github.io/aphelion/` URL
-- Add topics: `ascii`, `space-game`, `typescript`, `canvas`, `elite`, `effulgence`
-- Description: "A glowing-ASCII space trading game"
+### Render pipeline rewrite (current state)
 
-## Things deliberately NOT done
+The renderer went through several iterations this session as the parked glow bug got debugged. **Current pipeline:**
 
-- Multiplayer — would change everything; v2 territory
-- 3D solid-shaded ships — the wireframe glow IS the aesthetic
-- Fixed campaign / story — procedural emergent narrative is the point
-- Real-name copyrighted material from Elite (Lave, Diso, Coriolis-the-trademark, etc.)
-- Microtransactions or unlockables — it's a game, not a service
+1. Per-character glyph atlas (`glyphAtlas` in `index.html`):
+   - **Neutral cache** keyed by `(char, cell, profile)` — one tile per glyph, baked in light gray (#cccccc) for the halo (stacked `shadowBlur` passes under `'lighter'`) + pure white hot-core (no shadow). Used as the source for the tint pipeline.
+   - **Tinted cache** keyed by `(char, hue, sat, lightnessBucket, cell, profile)`, LRU-capped at 1536 entries (~50 MB at normal profile). Each tile is the neutral source run through a multiply + destination-in tint pipeline once, then drawn once per frame.
+2. `renderLayers` per cell: pick the brightest layer's character + tint, look up the tinted tile, single `drawImage` at `'lighter'` compositing. Overlapping halos stack additively → fills gaps between adjacent characters.
+3. `bloomDOM` (CSS-filter post-process canvas) is currently disabled — the per-glyph atlas now bakes halos directly into each tile, so post-process bloom on top would double-glow.
 
-## Open questions for the next session
+Profiles select halo blur radii + tile padding:
+```
+tight   2/6/14 px      pad 20    halo radius ~14
+normal  4/12/28 px     pad 40    halo radius ~28  (default)
+wide    4/12/28/60 px  pad 80    halo radius ~60
+```
 
-- **Settings page.** Theme picker currently lives top-left on every screen. Should move to a dedicated settings overlay along with future controls (UI scale, sound volume, key rebinding, save management). Started discussing this; deferred.
-- **Distance scale.** Set at 0.5 LY per chart unit, gives 4-8 LY for typical neighbor jumps. Will need adjustment when fuel costs are added.
-- **Planet projection in flight.** Current implementation uses camera-aligned axes for surface speckles rather than a properly rotated sphere. Looks fine for distant planets but breaks down close. Polish-pass item.
-- **Dashboard scanner.** The flight cockpit has empty space at the bottom where the elliptical 3D scanner should go. Iconic Elite UI. Should add when there are NPCs to track.
+The tint recipe is `glow-atlas.js` — the user dropped a complete drop-in mid-session and we wired it in with the LRU cache on top.
 
-## Useful references
+## Open bugs
 
-- `bbcelite.com` — Mark Moxon's annotated 6502 source for every Elite version. Deep-dive articles on the design decisions, especially `/deep_dives/ship_blueprints.html` and `/deep_dives/drawing_ships.html`.
-- Effulgence RPG on Steam — proves glowing ASCII can carry a modern game. Worth playing for inspiration.
-- The original Cobra Mk III blueprint (28 vertices, 38 edges, 13 faces) is in `index.html` as the canonical reference shape.
+### 1. Per-glyph glow halos do not render visibly (parked since session-mid)
+
+Even with the multiply-tint atlas above, the user reports halos still don't bleed out the way the Effulgence reference frames do. We tried, in order:
+
+1. Bucket bloom (per-layer offscreen canvas + progressive `ctx.filter = 'blur(...)'`)
+2. Per-glyph atlas with `ctx.filter` blur
+3. Per-glyph atlas with `shadowBlur` + neon colour ramp
+4. Direct per-cell `shadowBlur` on the visible canvas
+5. Stacked per-cell `shadowBlur` (3–5 fillText calls per cell)
+6. WebGL bloom postprocess (full GPU pipeline: half-res H+V blur, quarter-res H+V, additive composite)
+7. CSS `filter: blur()` on a stacked DOM canvas with `mix-blend-mode: screen`
+8. Per-glyph atlas with multiply-tint (current)
+
+The WebGL attempt failed identically across Chrome / Edge / Firefox, which strongly suggests a fallback GPU backend on the user's machine (SwiftShader / D3D9 / `Microsoft Basic Render Driver`) that satisfies WebGL conformance but lacks linear filtering or framebuffer blits. The diagnostic panel in the cockpit was added to confirm this — see `#webgl-diag`.
+
+The bake-test buttons in that panel produce per-profile tile PNGs in a fresh tab. **The next person picking this up should start there**: open `normal` in a new tab, see what the actual baked halo looks like. Fat halo extending into the tile corners → bake works, the bug is in how it gets composited back onto `#stage`. Tight halo or none → the underlying primitive isn't blurring on this machine and we should pivot to the off-ramp (ship the no-halo aesthetic and treat glow as a premium-platform extra).
+
+`docs/bugs.md` has the full failed-attempts log.
+
+### 2. Player gets destroyed instantly on respawn (open, currently masked by disabling enemy fire)
+
+Symptom: when the player's HP reaches 0, the `'destroyed'` reducer fires (resets HP to full, fuel to full, halves cargo, moves player to a safe respawn point, sets `respawnInvulnT = 8.0`, bumps `respawnGen`), but reportedly the player's HULL bar is shown going to zero again *immediately* on the next frame.
+
+Tried (all live):
+- Bumped invuln window 3s → 5s → 8s
+- Pushed respawn position back to z=-200 (closest NPC ~225u away, well outside `NPC_LASER_RANGE=50`)
+- Bumped systemBodies rebuild key with `respawnGen` so NPCs reset to deterministic spawn positions instead of staying parked on the wreckage
+- Pirate aggression dialled way down (DPS 40→22, speed 8→5, turn rate 0.6→0.45, stand-off 8→14, range 60→50, cone 0.92→0.95)
+
+Even with all of these, the user reports getting destroyed immediately on respawn. **There must be a damage source other than `applyHostileFire` that I haven't identified, or the dispatched state isn't actually landing.**
+
+**Currently masked** by an `ENEMY_FIRE_ENABLED = false` flag wrapping the `applyHostileFire` call in the flight tick (in `index.html`). Visuals stay honest — radar blips and incoming-fire `!` markers still show what *would* be firing — but no hp drain reaches the player.
+
+**To re-engage:** flip the flag back to `true`. To debug the underlying issue, suggested first steps:
+
+1. Add a `console.log('respawn: hp=' + game.shipHp + ' invulnT=' + game.respawnInvulnT + ' pos=' + game.ship.position)` in the `'destroyed'` reducer return path — confirm the dispatch is landing with the expected values.
+2. `grep -rn 'shipHp' index.html` and audit every assignment site. Currently only the `applyHostileFire` block writes `shipHp`, but there might be another path I missed.
+3. Add a frame-by-frame log of `game.shipHp` and `game.respawnInvulnT` to see when/how hp actually drops.
+
+## Recent file-by-file changelog
+
+### Sim layer
+- `src/sim/npc.ts` — added `role`, `hp`, `explodingT` to `NpcShip`; expanded `spawnNpcs` to 3–5 with role distribution; added `stepNpc` with pirate pursuit + trader flee + police-when-wanted.
+- `src/sim/combat.ts` — new module. Hit detection, damage, explosion lifecycle, pirate fire-back, combat rank table.
+- `src/sim/refuel.ts` — new module. `applyRefuel` + `refuelCost`.
+- `src/sim/save.ts` — bumped to v4. Adds `shipHp` + `kills` migration.
+- `src/sim/planetSurface.ts` — biome palettes are now seed-derived (Fisher-Yates over a per-biome glyph pool) + per-biome hue jitter.
+
+### Tests
+- `test/npc.test.ts` — 26 tests (spawn count, role distribution, pirate pursuit math, trader flee, police pursue/idle, exploding noop).
+- `test/combat.test.ts` — 38 tests (laser hit/miss, damage clamp, explosion lifecycle, pirate firing predicate, multi-pirate stacking, police-only-when-wanted, rank thresholds and edges).
+- `test/refuel.test.ts` — 11 tests (full tank no-op, partial credits, whole-LY rounding, top-up, fractional starting fuel).
+- `test/save.test.ts` — 20 tests (round trip, migration v1→v3 / v2→v3, negative-shipHp rejection, etc.).
+- `test/planetSurface.test.ts` — 17 tests including seed-derived palette determinism.
+
+### Render layer (`index.html`)
+- `glyphAtlas` rewritten ~6 times. Current version: neutral cache + tinted LRU cache + multiply+destination-in tint pipeline. Tinted-cache cap = 1536 to avoid thrashing on planet views.
+- `renderLayers` reduced to a single `drawImage` per cell at `'lighter'`.
+- `bloomDOM` (CSS filter overlay) currently disabled.
+- New layers: `lExplosion` (warn / atmospheric), `lBlipHostile` (warn / tight), `lBlipFriend` (status / tight).
+- `renderFlight` got radar-blip rendering, target-disk wireframe + HP bar, fire-flash, explosion rendering, incoming-fire bearing markers, mini-bar HULL row, RANK/KILLS HUD readouts, WANTED/POD indicators.
+- WebGL diagnostic panel (`#webgl-diag`) and bake-test "Open in new tab" buttons remain in place as live diagnostics for the parked glow bug.
+
+## Conventions worth preserving
+
+- **Pure simulation, dumb renderer.** Every behaviour goes in `src/sim/` as pure functions. `index.html` mirrors them inline. Tests target the pure layer.
+- **Deterministic everything.** Seed → galaxy → system → NPCs → biome palettes → planet hue jitter. Two players who launch see the same starting state. Save format only stores seeds + earned/chosen state, never derived data.
+- **Strict save validation.** Saves are best-effort and never throw. Future versions, malformed JSON, wrong shapes, out-of-range values all fall back to a fresh start.
+- **Forward-favoured flight.** Velocity bends toward heading at `velocityAlignRate: 4.0`. Strict Newtonian in a chase camera is miserable.
+- **Quaternions.** No gimbal lock, compose cleanly, renormalize every frame.
+- **`role` over hard-coded behaviour.** Adding a new NPC role is editing `ROLE_WEIGHTS` + adding a `step*` branch in `stepNpc` + (if relevant) adding a firing predicate. Same pattern for everything else.
+- **`!important` for `.show-{screen}` visibility classes.** Several elements (`#info`, `#galaxy-tabs`, `#countdown`, `#webgl-diag`, etc.) set `display: grid|flex` on their own ID rules; the data-screen toggle has lower specificity and would silently leak across screen transitions without the bang.
 
 ## How to continue
 
-To pick up where we left off, the natural next move is the **Coriolis station**. Suggested approach:
+When you pick this up, the natural next moves depend on whether the death-loop bug is solved.
 
-1. Add a `Station` type to `types.ts` (position, orientation, rotation rate, has-dock flag)
-2. Place one station per system, position derived from system seed (deterministic)
-3. Render in flight as a wireframe octagon — 8 vertices forming a regular octagonal cross-section, two of those rings stacked along the rotation axis
-4. The whole structure rotates slowly around its main axis (the "Coriolis spin" that gives passengers gravity in the original Elite lore)
-5. One face has the docking slot — a hole through which the ship enters
-6. Docking detection: if ship is inside a small volume on the docking-face axis with low velocity and aligned orientation, dock successfully. Otherwise crash.
+**If you can spend an hour on the death loop**, do that first — the game ships fine without enemy fire as a "peaceful mode" but combat is the v0.2 line item and the bug is presumably small.
 
-After that, the trade screen, then the rest of the ship roster.
+**If not, the next roadmap item is v0.2 final piece: Equipment upgrades** (better lasers / shields / ECM / fuel scoop / docking computer). That needs:
+1. Outfitter UI on the docked screen (parallel to the trade screen)
+2. Per-equipment effect plumbed through the sim — better laser = higher `LASER_DPS`, shields = extra hp layer that absorbs first, fuel scoop = passive fuel regen near the sun, docking computer = auto-dock (already-trivial since docking has no skill check), ECM = cancels pirate fire briefly (could trigger temporary invuln window from a held key)
+3. Save format v5 with installed-equipment list
+
+**Or move to v0.3** if you want a change of pace: missions, asteroid mining, sound (procedural blips + engine drone via Web Audio).
+
+**Always-relevant follow-ups:**
+- Trade screen visual polish (the Effulgence inventory reference the user posted — ASCII tile-art per commodity, bracket-frame buttons, top tab bar). Filed for v1.0 polish; could land sooner.
+- Per-blueprint NPC differentiation. Currently all NPCs are Wraiths. Pirates could be Wraiths (fast/aggressive), traders Haulers (slow/passive), police Sentinels (mid-tier). Already have the 5 blueprints in `blueprints.ts`; just needs `spawnNpcs` to pick by role.
+- Glow bug. If you have access to a high-end GPU machine, just confirm the WebGL backend in the diag panel before assuming a fallback. The bake-test buttons in the cockpit will tell you in seconds whether `shadowBlur` is actually spreading.
+
+## Useful references
+
+- `bbcelite.com` — Mark Moxon's annotated 6502 source for every Elite version. Especially `/deep_dives/ship_blueprints.html` and `/deep_dives/drawing_ships.html`.
+- Effulgence RPG on Steam — proves glowing ASCII can carry a modern game.
+- The Cobra Mk III blueprint (28 vertices, 38 edges, 13 faces) is in `index.html` as the canonical reference shape.
+- W3Schools `text-shadow` neon glow recipe — what the user kept pointing at when debugging glow. The current atlas implements this idea (white inner / saturated outer) baked into per-glyph tiles.
+
+## Things deliberately NOT done
+
+- Multiplayer — would change everything; v2 territory.
+- 3D solid-shaded ships — the wireframe glow IS the aesthetic.
+- Fixed campaign / story — procedural emergent narrative is the point.
+- Real-name copyrighted material from Elite (Lave, Diso, Coriolis-the-trademark, etc.). The "trade anchor" replaced Coriolis station for this reason — and to keep the glowing-ASCII signal-resolution conceit central to docking instead of an alignment puzzle.
+- Microtransactions or unlockables — it's a game, not a service.
