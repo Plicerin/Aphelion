@@ -1890,13 +1890,15 @@ const glyphAtlas = {
   clear(){ /* no per-glyph cache anymore — settings only */ },
 };
 
-// Per-layer base shadowBlur radii (in user-space px). Tight for
-// wireframes so the radar dish stays sharp; wider for atmospheric
-// content so the planet/sun reads as glowing.
-const SHADOW_BLUR_BY_PROFILE = {
-  tight:        4,
-  normal:       9,
-  atmospheric: 18,
+// Per-layer stacked-shadow recipes — direct translation of the CSS
+// text-shadow neon pattern (multiple shadows at progressively wider
+// radii). One shadow's Gaussian tail falls off too steeply to fill
+// the gaps between characters; stacking 3-5 radii is what makes
+// adjacent halos overlap and brighten the dark in between.
+const SHADOW_STACK_BY_PROFILE = {
+  tight:        [3,  7],
+  normal:       [4, 10, 22],
+  atmospheric: [4, 12, 28, 60],
 };
 
 function renderLayers(layers, cell, cols, rows, W, H){
@@ -1907,11 +1909,11 @@ function renderLayers(layers, cell, cols, rows, W, H){
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
 
-  // Direct per-cell shadowBlur on the visible canvas. fillText with
-  // a non-zero shadowBlur paints the character AND its Gaussian-
-  // blurred shadow in one primitive — canvas's equivalent of CSS
-  // text-shadow, no offscreen indirection. Slower than caching but
-  // verifies that glow lands on the screen at all.
+  // Per-cell render. Halo first as a stack of fillText calls at
+  // increasing shadowBlur radii under 'lighter' compositing — that's
+  // the canvas form of the W3Schools text-shadow neon recipe. Sharp
+  // character drawn last on top so the readable glyph sits inside
+  // its glow.
   for(let gy=0;gy<rows;gy++){
     for(let gx=0;gx<cols;gx++){
       const idx = gy*cols + gx;
@@ -1927,25 +1929,40 @@ function renderLayers(layers, cell, cols, rows, W, H){
       const hue = c.h + hueDelta;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
       const x = gx*cell + cell/2, y = gy*cell + cell/2;
+      const sharpStyle = `hsl(${hue}, ${c.s}%, ${light}%)`;
 
-      const baseBlur = SHADOW_BLUR_BY_PROFILE[bestL.bloomProfile] ?? SHADOW_BLUR_BY_PROFILE.normal;
       if(glowMul > 0.02){
-        const haloSat   = Math.min(100, c.s + 15);
-        const haloLight = Math.min(75,  light + 5);
-        const haloAlpha = Math.min(1, glowMul * (bestL.bloomMul || 1));
-        ctx.shadowColor = `hsla(${hue}, ${haloSat}%, ${haloLight}%, ${haloAlpha})`;
-        ctx.shadowBlur  = baseBlur * blurScale;
-      } else {
+        const radii = SHADOW_STACK_BY_PROFILE[bestL.bloomProfile] || SHADOW_STACK_BY_PROFILE.normal;
+        const layerMul = bestL.bloomMul || 1;
+        const haloAlpha = Math.min(1, glowMul * layerMul);
+        ctx.globalCompositeOperation = 'lighter';
+        const N = radii.length;
+        for(let i = 0; i < N; i++){
+          const t = N === 1 ? 1 : i / (N - 1);   // 0 inner / hot core, 1 outer halo
+          // Inner passes are bright and near-white (the "tube core"),
+          // outer passes are saturated halo colour — matches the CSS
+          // neon recipe of stacking 'white inner' + 'cyan outer'.
+          const passSat   = Math.round(c.s * t + 25 * (1 - t));
+          const passLight = Math.min(95, Math.round(light * t + 92 * (1 - t)));
+          const passColor = `hsla(${hue}, ${passSat}%, ${passLight}%, ${haloAlpha})`;
+          ctx.shadowColor = passColor;
+          ctx.shadowBlur  = radii[i] * blurScale;
+          ctx.fillStyle   = passColor;
+          ctx.fillText(ch, x, y);
+        }
+        ctx.globalCompositeOperation = 'source-over';
         ctx.shadowBlur = 0;
+        ctx.shadowColor = 'rgba(0,0,0,0)';
       }
 
-      ctx.fillStyle = `hsl(${hue}, ${c.s}%, ${light}%)`;
+      ctx.fillStyle = sharpStyle;
       ctx.fillText(ch, x, y);
     }
   }
 
   ctx.shadowBlur = 0;
   ctx.shadowColor = 'rgba(0,0,0,0)';
+  ctx.globalCompositeOperation = 'source-over';
 }
 
 /* ===== 9. Planet renderer ===== */
