@@ -2092,18 +2092,18 @@ resize();
     cx.textAlign = 'center';
     const x = SIZE/2, y = SIZE/2;
 
-    // Halo bake — stacked shadowBlur passes under 'lighter'.
+    // Halo bake — stacked shadowBlur passes under 'lighter'. All
+    // passes paint the SAME saturated halo colour: the white-hot
+    // centre is the hot-core stage's job, not the halo's. Earlier
+    // versions of this had the inner passes biased toward white,
+    // which saturated the centre before the hot core could
+    // contribute and made the two stages visually identical.
     cx.globalCompositeOperation = 'lighter';
-    const N = passes.length;
-    for(let i = 0; i < N; i++){
-      const p = passes[i];
-      const t = N === 1 ? 1 : i / (N - 1);
-      const passSat   = Math.round(sat * t + 25 * (1 - t));
-      const passLight = Math.min(95, Math.round(lightness * t + 92 * (1 - t)));
-      const passColor = `hsl(${hue}, ${passSat}%, ${passLight}%)`;
-      cx.shadowColor = passColor;
+    const haloColor = `hsl(${hue}, ${sat}%, ${lightness}%)`;
+    for(const p of passes){
+      cx.shadowColor = haloColor;
       cx.shadowBlur  = p.blur;
-      cx.fillStyle   = passColor;
+      cx.fillStyle   = haloColor;
       cx.globalAlpha = p.alpha;
       cx.fillText(ch, x, y);
     }
