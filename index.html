@@ -56,19 +56,24 @@
     text-shadow: none;
   }
 
-  /* Sections that show only on certain screens. Toggled by data-screen. */
+  /* Sections that show only on certain screens. Toggled by data-screen.
+     `!important` here is intentional — several of the targets (e.g.
+     #info, #galaxy-tabs, #countdown) set display: grid|flex on their
+     own ID rules, which would otherwise win on specificity (ID > class)
+     and leak across screen transitions. The data-screen toggle is the
+     canonical visibility signal and needs to beat per-element rules. */
   body[data-screen="chart"] .show-flight,
   body[data-screen="chart"] .show-hyperspace,
-  body[data-screen="chart"] .show-docked { display: none; }
+  body[data-screen="chart"] .show-docked { display: none !important; }
   body[data-screen="hyperspace"] .show-chart,
   body[data-screen="hyperspace"] .show-flight,
-  body[data-screen="hyperspace"] .show-docked { display: none; }
+  body[data-screen="hyperspace"] .show-docked { display: none !important; }
   body[data-screen="flight"] .show-chart,
   body[data-screen="flight"] .show-hyperspace,
-  body[data-screen="flight"] .show-docked { display: none; }
+  body[data-screen="flight"] .show-docked { display: none !important; }
   body[data-screen="docked"] .show-chart,
   body[data-screen="docked"] .show-flight,
-  body[data-screen="docked"] .show-hyperspace { display: none; }
+  body[data-screen="docked"] .show-hyperspace { display: none !important; }
 
   /* ============== Theme picker ============== */
   #theme-picker {
