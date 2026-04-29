@@ -5399,12 +5399,14 @@ function frame(now){
       }
       systemBodies.npcs = advanceExplosions(systemBodies.npcs, dt);
 
-      // Incoming hostile fire. Pirates always shoot when on target;
-      // police shoot when on target AND the player is wanted. Hitting
-      // 0 hp triggers the destroyed reducer (resets ship pose + fuel,
-      // halves cargo, full hp). Skipped during the post-respawn
-      // invuln window so pirates can't insta-kill the new pod.
-      if((game.respawnInvulnT ?? 0) <= 0){
+      // ENEMY FIRE DISABLED. Per user request — re-enable once the
+      // mystery 'destroyed on respawn' bug is identified. The
+      // pirateIsFiring / npcIsFiringOnPlayer helpers still run for
+      // the canopy bearing markers and radar so the visuals stay
+      // honest about who would be shooting; only the hp drain is
+      // suppressed. Toggle ENEMY_FIRE_ENABLED to true when ready.
+      const ENEMY_FIRE_ENABLED = false;
+      if(ENEMY_FIRE_ENABLED && (game.respawnInvulnT ?? 0) <= 0){
         const playerWanted = (game.wantedT ?? 0) > 0;
         const newHp = applyHostileFire(
           game.shipHp ?? PLAYER_MAX_HP,
