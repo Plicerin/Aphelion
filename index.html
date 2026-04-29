@@ -34,6 +34,12 @@
   }
 
   #stage { position: fixed; inset: 0; display: block; z-index: 1; cursor: crosshair; }
+  /* WebGL bloom overlay — receives the bloom postprocess output and
+     composites over #stage with screen blending. Pointer-events off
+     so it never steals clicks; mix-blend-mode: screen brightens dark
+     areas with the bloom colour while leaving bright canvas-2D
+     content saturated. */
+  #bloomGL { position: fixed; inset: 0; display: block; z-index: 2; pointer-events: none; mix-blend-mode: screen; }
 
   /* ============== Title bar (shared across screens) ============== */
   #title {
@@ -977,6 +983,7 @@
 </head>
 <body data-screen="chart">
   <canvas id="stage"></canvas>
+  <canvas id="bloomGL"></canvas>
 
   <!-- Title (always visible) -->
   <div id="title">
@@ -1828,6 +1835,256 @@ addEventListener('resize', resize);
 resize();
 
 /**
+ * WebGL bloom postprocess.
+ *
+ * The 2D canvas pipeline drew sharp characters with no halo bleed in
+ * Chrome (see docs/bugs.md). WebGL's blur is a real GPU Gaussian
+ * convolution that doesn't rely on ctx.filter or shadowBlur, so it
+ * can produce the wide ambient glow Effulgence's reference frames
+ * have without depending on the canvas-2D quirks that defeated the
+ * previous attempts.
+ *
+ * Pipeline (per frame):
+ *   1. Upload #stage as a texture (the "bright pass" source).
+ *   2. Half-res horizontal Gaussian blur (sample srcTex, render to
+ *      half-res FBO).
+ *   3. Half-res vertical blur (ping-pong FBO).
+ *   4. Quarter-res horizontal blur of the half-res result.
+ *   5. Quarter-res vertical blur.
+ *   6. Composite half + quarter additively to the #bloomGL canvas.
+ *
+ * The #bloomGL canvas sits over #stage with mix-blend-mode: screen,
+ * so its bright halo pixels brighten the dark gaps in the 2D canvas
+ * underneath while leaving sharp character pixels intact.
+ */
+const bloomGL = (function(){
+  const bloomCanvas = document.getElementById('bloomGL');
+  if(!bloomCanvas) return null;
+  const gl = bloomCanvas.getContext('webgl', {
+    alpha: true, premultipliedAlpha: false, antialias: false, depth: false, stencil: false,
+  });
+  if(!gl){
+    console.warn('Aphelion: WebGL not available, bloom disabled.');
+    bloomCanvas.style.display = 'none';
+    return null;
+  }
+
+  const VERT = `attribute vec2 position;
+varying vec2 vUv;
+void main(){
+  gl_Position = vec4(position, 0.0, 1.0);
+  vUv = position * 0.5 + 0.5;
+}`;
+
+  // Separable 9-tap Gaussian. uDir picks horizontal (1,0) or vertical
+  // (0,1); uRadius scales the kernel spread in source texels.
+  const FRAG_BLUR = `precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uTexel;
+uniform vec2 uDir;
+uniform float uRadius;
+void main(){
+  vec2 step = uDir * uTexel * uRadius;
+  vec4 sum = vec4(0.0);
+  sum += texture2D(uTex, vUv - step * 4.0) * 0.05;
+  sum += texture2D(uTex, vUv - step * 3.0) * 0.09;
+  sum += texture2D(uTex, vUv - step * 2.0) * 0.12;
+  sum += texture2D(uTex, vUv - step * 1.0) * 0.15;
+  sum += texture2D(uTex, vUv) * 0.18;
+  sum += texture2D(uTex, vUv + step * 1.0) * 0.15;
+  sum += texture2D(uTex, vUv + step * 2.0) * 0.12;
+  sum += texture2D(uTex, vUv + step * 3.0) * 0.09;
+  sum += texture2D(uTex, vUv + step * 4.0) * 0.05;
+  gl_FragColor = sum;
+}`;
+
+  // Composite: sum two blurred textures, scale by intensity, derive
+  // alpha from luminance so screen-blend treats dark pixels as no-op.
+  const FRAG_COMP = `precision mediump float;
+varying vec2 vUv;
+uniform sampler2D uTexA;
+uniform sampler2D uTexB;
+uniform float uIntensity;
+void main(){
+  vec4 a = texture2D(uTexA, vUv);
+  vec4 b = texture2D(uTexB, vUv);
+  vec3 sum = (a.rgb + b.rgb) * uIntensity;
+  float luma = dot(sum, vec3(0.299, 0.587, 0.114));
+  gl_FragColor = vec4(sum, min(1.0, luma * 1.5));
+}`;
+
+  function compileShader(type, src){
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+      console.error('Aphelion shader compile error:', gl.getShaderInfoLog(sh));
+      gl.deleteShader(sh);
+      return null;
+    }
+    return sh;
+  }
+  function linkProgram(vs, fs){
+    const p = gl.createProgram();
+    gl.attachShader(p, vs); gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+      console.error('Aphelion program link error:', gl.getProgramInfoLog(p));
+      gl.deleteProgram(p);
+      return null;
+    }
+    return p;
+  }
+
+  const vs       = compileShader(gl.VERTEX_SHADER, VERT);
+  const blurFs   = compileShader(gl.FRAGMENT_SHADER, FRAG_BLUR);
+  const compFs   = compileShader(gl.FRAGMENT_SHADER, FRAG_COMP);
+  if(!vs || !blurFs || !compFs){ bloomCanvas.style.display='none'; return null; }
+
+  const pBlur = linkProgram(vs, blurFs);
+  const pComp = linkProgram(vs, compFs);
+  if(!pBlur || !pComp){ bloomCanvas.style.display='none'; return null; }
+
+  // Cache uniform / attribute locations once.
+  const u = {
+    blur: {
+      pos:    gl.getAttribLocation(pBlur, 'position'),
+      tex:    gl.getUniformLocation(pBlur, 'uTex'),
+      texel:  gl.getUniformLocation(pBlur, 'uTexel'),
+      dir:    gl.getUniformLocation(pBlur, 'uDir'),
+      radius: gl.getUniformLocation(pBlur, 'uRadius'),
+    },
+    comp: {
+      pos:    gl.getAttribLocation(pComp, 'position'),
+      texA:   gl.getUniformLocation(pComp, 'uTexA'),
+      texB:   gl.getUniformLocation(pComp, 'uTexB'),
+      intens: gl.getUniformLocation(pComp, 'uIntensity'),
+    },
+  };
+
+  // Fullscreen-quad geometry in clip space.
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+  // Lazy-allocated textures + framebuffers, keyed by current canvas
+  // size. Half-res for the broad halo, quarter-res for the ambient
+  // bleed; ping-pong each pair across H/V passes.
+  let srcTex = null;
+  let halfA_t = null, halfA_f = null;
+  let halfB_t = null, halfB_f = null;
+  let quartA_t = null, quartA_f = null;
+  let quartB_t = null, quartB_f = null;
+  let lastW = 0, lastH = 0;
+
+  function makeTex(w, h){
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  }
+  function makeFBO(tex){
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return f;
+  }
+  function ensureSize(w, h){
+    if(w === lastW && h === lastH) return;
+    [srcTex, halfA_t, halfB_t, quartA_t, quartB_t].forEach(t => t && gl.deleteTexture(t));
+    [halfA_f, halfB_f, quartA_f, quartB_f].forEach(f => f && gl.deleteFramebuffer(f));
+    lastW = w; lastH = h;
+    bloomCanvas.width = w; bloomCanvas.height = h;
+    bloomCanvas.style.width = innerWidth + 'px';
+    bloomCanvas.style.height = innerHeight + 'px';
+    srcTex = makeTex(w, h);
+    const hw = Math.max(1, w >> 1), hh = Math.max(1, h >> 1);
+    halfA_t  = makeTex(hw, hh); halfA_f  = makeFBO(halfA_t);
+    halfB_t  = makeTex(hw, hh); halfB_f  = makeFBO(halfB_t);
+    const qw = Math.max(1, w >> 2), qh = Math.max(1, h >> 2);
+    quartA_t = makeTex(qw, qh); quartA_f = makeFBO(quartA_t);
+    quartB_t = makeTex(qw, qh); quartB_f = makeFBO(quartB_t);
+  }
+
+  function blurPass(srcTexHandle, dstFbo, dstW, dstH, srcW, srcH, dirX, dirY, radius){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+    gl.viewport(0, 0, dstW, dstH);
+    gl.useProgram(pBlur);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(u.blur.pos);
+    gl.vertexAttribPointer(u.blur.pos, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcTexHandle);
+    gl.uniform1i(u.blur.tex, 0);
+    gl.uniform2f(u.blur.texel, 1/srcW, 1/srcH);
+    gl.uniform2f(u.blur.dir, dirX, dirY);
+    gl.uniform1f(u.blur.radius, radius);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  function clear(){
+    if(lastW === 0) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, bloomCanvas.width, bloomCanvas.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  function render(sourceCanvas, intensity, radius){
+    if(!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return;
+    const W = sourceCanvas.width, H = sourceCanvas.height;
+    ensureSize(W, H);
+
+    if(intensity < 0.02){ clear(); return; }
+
+    // Upload the 2D canvas as the bloom source. FLIP_Y so texture UV
+    // (0,0) is at the SOURCE's top-left, matching the canvas-2D
+    // coordinate system the bloom needs to align with on output.
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+
+    const hw = Math.max(1, W >> 1), hh = Math.max(1, H >> 1);
+    const qw = Math.max(1, W >> 2), qh = Math.max(1, H >> 2);
+
+    // Half-res H + V blur from source.
+    blurPass(srcTex, halfA_f, hw, hh, W, H,    1, 0, radius);
+    blurPass(halfA_t, halfB_f, hw, hh, hw, hh, 0, 1, radius);
+
+    // Quarter-res H + V blur seeded from the half-res result. This
+    // gives the broader "ambient" halo at low cost.
+    blurPass(halfB_t,  quartA_f, qw, qh, hw, hh, 1, 0, radius);
+    blurPass(quartA_t, quartB_f, qw, qh, qw, qh, 0, 1, radius);
+
+    // Composite half + quarter to the GL canvas.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, W, H);
+    gl.useProgram(pComp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(u.comp.pos);
+    gl.vertexAttribPointer(u.comp.pos, 2, gl.FLOAT, false, 0, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, halfB_t);
+    gl.uniform1i(u.comp.texA, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, quartB_t);
+    gl.uniform1i(u.comp.texB, 1);
+    gl.uniform1f(u.comp.intens, intensity);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  return { render, clear };
+})();
+
+/**
  * Per-layer bucket bloom.
  *
  * For each layer, characters are written sharp to the main canvas
@@ -1896,24 +2153,11 @@ const glyphAtlas = {
 };
 
 function renderLayers(layers, cell, cols, rows, W, H){
-  const glowMul = game.glowMul ?? 0.75;
-  const blurScale = glyphAtlas.PROFILES[glyphAtlas.profile] || 1;
-
-  // Bucket-based bloom. Visible glow per glyph is currently NOT
-  // working in this codebase (see docs/bugs.md → "Per-glyph glow
-  // halos do not render"). Until that's resolved, layers fall back
-  // to bucket bloom — sharp characters on the main canvas, brighter
-  // characters into a per-layer offscreen bucket, then ctx.filter
-  // blur passes from each bucket additively composited onto main.
-  // Per-layer profile keeps wireframes (radar dish) crisp while
-  // atmospheric layers get wider passes.
-  for(const L of layers){
-    const b = getBloomBucket(L.name);
-    b.ctx.clearRect(0, 0, W, H);
-    b.ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
-    b.ctx.textBaseline = 'middle';
-    b.ctx.textAlign = 'center';
-  }
+  // Sharp character pass only. The glow halo lives in the WebGL
+  // bloom postprocess (bloomGL.render in the main frame loop), which
+  // operates on the entire #stage canvas after this function returns.
+  // Keeping renderLayers focused on glyph placement makes the bloom
+  // input deterministic and the canvas-2D code easy to reason about.
   ctx.font = `${cell-1}px ui-monospace, "JetBrains Mono", monospace`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'center';
@@ -1932,33 +2176,9 @@ function renderLayers(layers, cell, cols, rows, W, H){
       const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
       const hue = c.h + hueDelta;
       const light = Math.max(20, Math.min(95, c.l - 15 + bestV*40));
-      const x = gx*cell + cell/2, y = gy*cell + cell/2;
-
       ctx.fillStyle = `hsl(${hue}, ${c.s}%, ${light}%)`;
-      ctx.fillText(ch, x, y);
-
-      const b = getBloomBucket(bestL.name);
-      b.ctx.fillStyle = `hsl(${hue}, ${Math.min(100, c.s+5)}%, ${Math.min(95, light+18)}%)`;
-      b.ctx.fillText(ch, x, y);
+      ctx.fillText(ch, gx*cell + cell/2, gy*cell + cell/2);
     }
-  }
-
-  if(glowMul > 0.01){
-    ctx.globalCompositeOperation = 'lighter';
-    for(const L of layers){
-      const b = getBloomBucket(L.name);
-      if(!b.canvas.width || !b.canvas.height) continue;
-      const profile = BLOOM_PROFILES[L.bloomProfile] || BLOOM_PROFILES.normal;
-      const layerMul = L.bloomMul || 1;
-      for(const p of profile){
-        ctx.filter = `blur(${p.blur * blurScale}px)`;
-        ctx.globalAlpha = Math.min(1, p.alpha * layerMul * glowMul);
-        ctx.drawImage(b.canvas, 0, 0, W, H);
-      }
-    }
-    ctx.filter = 'none';
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'source-over';
   }
 }
 
@@ -4254,6 +4474,21 @@ function frame(now){
   else if(game.screen === 'flight') renderFlight(game, theme, dt);
   else if(game.screen === 'hyperspace') renderHyperspace(game, theme, dt);
   // 'docked' is a pure HTML overlay — no canvas render needed.
+
+  // WebGL bloom postprocess. Reads the freshly-painted #stage canvas
+  // and paints the halo onto #bloomGL, which screen-blends over the
+  // top. On 'docked' the GL canvas is cleared so the docked HTML
+  // overlay isn't lit by stale bloom from the previous flight frame.
+  if(bloomGL){
+    if(game.screen === 'docked'){
+      bloomGL.clear();
+    } else {
+      const intensity = (game.glowMul ?? 0.75) * 1.4;
+      const radiusByProfile = { tight: 1.2, normal: 2.4, wide: 4.0 };
+      const radius = radiusByProfile[glyphAtlas.profile] ?? 2.4;
+      bloomGL.render(stage, intensity, radius);
+    }
+  }
 
   requestAnimationFrame(frame);
 }
