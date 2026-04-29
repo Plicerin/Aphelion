@@ -1831,21 +1831,24 @@ function spawnNpcs(sys){
   return npcs;
 }
 
-/* Pirate behaviour. Slower than the player so they're catchable. */
-const NPC_PIRATE_SPEED     = 8;
-const NPC_PIRATE_TURN_RATE = 0.6;
-const NPC_PIRATE_STAND_OFF = 8;
-function stepNpc(npc, playerPos, dt){
-  if(npc.role !== 'pirate') return npc;
-  const dx = playerPos[0] - npc.position[0];
-  const dz = playerPos[2] - npc.position[2];
-  const horizDist = Math.hypot(dx, dz);
-  if(horizDist < NPC_PIRATE_STAND_OFF) return npc;
-  const targetYaw = Math.atan2(dx, dz);
+/* NPC behaviour tunables — mirror of src/sim/npc.ts. Pirates are
+ * slightly slower than the player so they're catchable; traders
+ * out-cruise pirates in a straight line but turn slower. 2D model:
+ * pitch stays at 0 until weapons land. */
+const NPC_PIRATE_SPEED        = 8;
+const NPC_PIRATE_TURN_RATE    = 0.6;
+const NPC_PIRATE_STAND_OFF    = 8;
+const NPC_TRADER_SPEED        = 9;
+const NPC_TRADER_TURN_RATE    = 0.4;
+const NPC_TRADER_FLEE_RADIUS  = 30;
+
+/* Step npc heading toward a target yaw (capped) and translate
+ * forward at speed. Shared by pirate-pursue and trader-flee. */
+function _stepTowardYaw(npc, targetYaw, speed, turnRate, dt){
   let yawErr = targetYaw - npc.yaw;
   while(yawErr >  Math.PI) yawErr -= 2 * Math.PI;
   while(yawErr < -Math.PI) yawErr += 2 * Math.PI;
-  const maxStep = NPC_PIRATE_TURN_RATE * dt;
+  const maxStep = turnRate * dt;
   const yawStep = Math.abs(yawErr) <= maxStep
     ? yawErr
     : Math.sign(yawErr) * maxStep;
@@ -1854,12 +1857,47 @@ function stepNpc(npc, playerPos, dt){
   while(newYaw >= 2 * Math.PI)  newYaw -= 2 * Math.PI;
   const fx = Math.sin(newYaw);
   const fz = Math.cos(newYaw);
-  const newPos = [
-    npc.position[0] + fx * NPC_PIRATE_SPEED * dt,
-    npc.position[1],
-    npc.position[2] + fz * NPC_PIRATE_SPEED * dt,
-  ];
-  return { ...npc, position: newPos, yaw: newYaw };
+  return {
+    ...npc,
+    yaw: newYaw,
+    position: [
+      npc.position[0] + fx * speed * dt,
+      npc.position[1],
+      npc.position[2] + fz * speed * dt,
+    ],
+  };
+}
+
+function _stepPirate(npc, playerPos, dt){
+  const dx = playerPos[0] - npc.position[0];
+  const dz = playerPos[2] - npc.position[2];
+  if(Math.hypot(dx, dz) < NPC_PIRATE_STAND_OFF) return npc;
+  return _stepTowardYaw(npc, Math.atan2(dx, dz), NPC_PIRATE_SPEED, NPC_PIRATE_TURN_RATE, dt);
+}
+
+function _stepTrader(npc, npcs, dt){
+  // Find the closest pirate within flee radius.
+  let closest = null;
+  let closestD2 = NPC_TRADER_FLEE_RADIUS * NPC_TRADER_FLEE_RADIUS;
+  for(const other of npcs){
+    if(other === npc) continue;
+    if(other.role !== 'pirate') continue;
+    const dx = other.position[0] - npc.position[0];
+    const dz = other.position[2] - npc.position[2];
+    const d2 = dx*dx + dz*dz;
+    if(d2 < closestD2){ closest = other; closestD2 = d2; }
+  }
+  if(!closest) return npc;
+  // Target yaw: away from the closest pirate.
+  const ax = npc.position[0] - closest.position[0];
+  const az = npc.position[2] - closest.position[2];
+  return _stepTowardYaw(npc, Math.atan2(ax, az), NPC_TRADER_SPEED, NPC_TRADER_TURN_RATE, dt);
+}
+
+function stepNpc(npc, ctx, dt){
+  if(npc.role === 'pirate') return _stepPirate(npc, ctx.playerPos, dt);
+  if(npc.role === 'trader') return _stepTrader(npc, ctx.npcs, dt);
+  return npc;
 }
 
 /* ===== 5b. Trade anchor =====
@@ -4645,10 +4683,14 @@ function frame(now){
   if(game.screen === 'flight'){
     const controls = sampleControls();
     game = { ...game, ship: stepShip(game.ship, controls, dt) };
-    // NPC behaviour tick — pirates pursue the player; traders and
-    // police are unchanged by stepNpc in this slice.
+    // NPC behaviour tick — pirates pursue, traders flee from nearby
+    // pirates, police are unchanged in this slice. Each npc reads
+    // the snapshot of the previous frame's npc list, then all are
+    // updated simultaneously so behaviour is order-independent.
     if(systemBodies && systemBodies.npcs){
-      systemBodies.npcs = systemBodies.npcs.map(n => stepNpc(n, game.ship.position, dt));
+      const ctxNpcs = systemBodies.npcs;
+      const ctx = { playerPos: game.ship.position, npcs: ctxNpcs };
+      systemBodies.npcs = ctxNpcs.map(n => stepNpc(n, ctx, dt));
     }
     // Docking timer — only meaningful when there's an anchor in this system.
     if(systemBodies && systemBodies.anchor){

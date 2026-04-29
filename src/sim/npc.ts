@@ -3,23 +3,25 @@
  *
  * Two responsibilities:
  *
- *   spawnNpcs(system)   — pure derivation. Returns the ships visible
- *                         in a system, deterministic from the seed.
- *                         Each NPC has a role (pirate / police /
- *                         trader) whose distribution is biased by
- *                         government type — anarchies skew pirate,
- *                         corporate-states skew police.
+ *   spawnNpcs(system)           — pure derivation. Returns the ships
+ *                                 visible in a system, deterministic
+ *                                 from the seed. Each NPC has a role
+ *                                 (pirate / police / trader) whose
+ *                                 distribution is biased by government
+ *                                 type — anarchies skew pirate,
+ *                                 corporate-states skew police.
  *
- *   stepNpc(npc, ...)   — per-frame behaviour. Pirates yaw toward the
- *                         player and throttle forward; traders and
- *                         police stay parked in this slice. Pure
- *                         function: takes the npc and player state,
- *                         returns the updated npc.
+ *   stepNpc(npc, ctx, dt)       — per-frame behaviour. Pirates yaw
+ *                                 toward the player and throttle in;
+ *                                 traders detect nearby pirates and
+ *                                 flee in the opposite direction;
+ *                                 police stay parked in this slice.
+ *                                 Pure function, returns a new npc.
  *
  * No state machine, no encounter system, no save format — every
  * frame the renderer asks for the npc list, calls stepNpc on each
- * one, and that's it. Multi-role behaviour (trader-flee, police
- * intervention, combat-rank tracking) lands in follow-ups.
+ * one, and that's it. Police behaviour and combat-rank tracking
+ * land in follow-ups.
  */
 
 import type { Government, SeedTriple, System } from '../types';
@@ -98,57 +100,104 @@ export function spawnNpcs(system: System): readonly NpcShip[] {
   return npcs;
 }
 
-/* Pirate behaviour tunables. Values picked to read at the same scale
- * as the player ship (TUNING.maxSpeed = 80, TUNING.turnRate = 1.2).
- * Pirates are slower and turn slower so the player has a fighting
- * chance even if the AI is mathematically perfect. */
-const PIRATE_SPEED      = 8;        // world units / second
-const PIRATE_TURN_RATE  = 0.6;      // radians / second
-/** Minimum stand-off distance — once a pirate is this close, it stops
- *  closing so it doesn't fly through the player every frame. */
-const PIRATE_STAND_OFF  = 8;
+/* Behaviour tunables. Pirates are slightly slower than the player so
+ * they're catchable; traders out-cruise pirates in a straight line
+ * but turn slower, giving pirates a chance to corner them by cutting
+ * angles. Both are 2D — pitch stays at 0 until weapons land. */
+const PIRATE_SPEED        = 8;
+const PIRATE_TURN_RATE    = 0.6;
+const PIRATE_STAND_OFF    = 8;
+
+const TRADER_SPEED        = 9;       // a touch faster than pirates in a chase
+const TRADER_TURN_RATE    = 0.4;     // but slower to change heading
+const TRADER_FLEE_RADIUS  = 30;      // start fleeing when a pirate is this close
 
 /**
- * One frame of NPC behaviour. Pure: takes the npc + player position
- * + dt, returns the new npc. Non-pirate roles return unchanged.
+ * Per-frame context for stepNpc.
  *
- * Pirates use a 2D pursuit model in the (x, z) plane — match yaw to
- * the bearing of the player, then throttle forward. Pitch stays at
- * zero; full 3D dogfighting lands when ships start firing.
+ *   playerPos — current player ship position; pirates target it.
+ *   npcs      — full list of NPCs in the system at the START of this
+ *               frame. Traders read pirate positions from it. Self
+ *               filtering is done inside stepNpc.
  */
-export function stepNpc(npc: NpcShip, playerPos: Vec3, dt: number): NpcShip {
-  if (npc.role !== 'pirate') return npc;
+export interface NpcStepCtx {
+  readonly playerPos: Vec3;
+  readonly npcs: readonly NpcShip[];
+}
 
+/**
+ * One frame of NPC behaviour. Pure: takes the npc + context + dt,
+ * returns a new npc. Police return unchanged in this slice.
+ */
+export function stepNpc(npc: NpcShip, ctx: NpcStepCtx, dt: number): NpcShip {
+  if (npc.role === 'pirate') return stepPirate(npc, ctx.playerPos, dt);
+  if (npc.role === 'trader') return stepTrader(npc, ctx.npcs, dt);
+  return npc;
+}
+
+/* ===== Pirate pursuit ===== */
+
+function stepPirate(npc: NpcShip, playerPos: Vec3, dt: number): NpcShip {
   const dx = playerPos[0] - npc.position[0];
   const dz = playerPos[2] - npc.position[2];
-  const horizDist = Math.hypot(dx, dz);
-  if (horizDist < PIRATE_STAND_OFF) return npc;
-
-  // Bearing toward player. yaw=0 in this codebase faces +Z, so the
-  // target yaw is atan2(dx, dz), not the more familiar atan2(y, x).
+  if (Math.hypot(dx, dz) < PIRATE_STAND_OFF) return npc;
   const targetYaw = Math.atan2(dx, dz);
+  return stepTowardYaw(npc, targetYaw, PIRATE_SPEED, PIRATE_TURN_RATE, dt);
+}
 
-  // Shortest-path yaw step, capped at the per-frame turn budget.
+/* ===== Trader flee ===== */
+
+function stepTrader(npc: NpcShip, npcs: readonly NpcShip[], dt: number): NpcShip {
+  // Find the closest pirate within flee radius.
+  let closest: NpcShip | null = null;
+  let closestD2 = TRADER_FLEE_RADIUS * TRADER_FLEE_RADIUS;
+  for (const other of npcs) {
+    if (other === npc) continue;
+    if (other.role !== 'pirate') continue;
+    const dx = other.position[0] - npc.position[0];
+    const dz = other.position[2] - npc.position[2];
+    const d2 = dx * dx + dz * dz;
+    if (d2 < closestD2) {
+      closest = other;
+      closestD2 = d2;
+    }
+  }
+  if (!closest) return npc;
+  // Target yaw: away from the closest pirate.
+  const ax = npc.position[0] - closest.position[0];
+  const az = npc.position[2] - closest.position[2];
+  const targetYaw = Math.atan2(ax, az);
+  return stepTowardYaw(npc, targetYaw, TRADER_SPEED, TRADER_TURN_RATE, dt);
+}
+
+/* ===== Shared movement helper =====
+ *
+ * Step the npc's heading toward `targetYaw` (capped at turnRate * dt),
+ * then translate forward at `speed`. Yaw stays in [0, 2π); y stays
+ * unchanged (2D plane only).
+ */
+function stepTowardYaw(
+  npc: NpcShip, targetYaw: number, speed: number, turnRate: number, dt: number,
+): NpcShip {
   let yawErr = targetYaw - npc.yaw;
   while (yawErr >  Math.PI) yawErr -= 2 * Math.PI;
   while (yawErr < -Math.PI) yawErr += 2 * Math.PI;
-  const maxStep = PIRATE_TURN_RATE * dt;
+  const maxStep = turnRate * dt;
   const yawStep = Math.abs(yawErr) <= maxStep
     ? yawErr
     : Math.sign(yawErr) * maxStep;
   let newYaw = npc.yaw + yawStep;
-  // Keep yaw in [0, 2π) so visualizations / tests never drift.
   while (newYaw <  0)             newYaw += 2 * Math.PI;
   while (newYaw >= 2 * Math.PI)   newYaw -= 2 * Math.PI;
-
-  // Move forward along the new heading at pirate cruise speed.
   const fx = Math.sin(newYaw);
   const fz = Math.cos(newYaw);
-  const newPos: Vec3 = [
-    npc.position[0] + fx * PIRATE_SPEED * dt,
-    npc.position[1],
-    npc.position[2] + fz * PIRATE_SPEED * dt,
-  ];
-
-  return { ...npc, position: newPos, yaw: newYaw };
+  return {
+    ...npc,
+    yaw: newYaw,
+    position: [
+      npc.position[0] + fx * speed * dt,
+      npc.position[1],
+      npc.position[2] + fz * speed * dt,
+    ],
+  };
 }
