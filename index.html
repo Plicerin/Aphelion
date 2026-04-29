@@ -1859,15 +1859,26 @@ resize();
  */
 const bloomGL = (function(){
   const bloomCanvas = document.getElementById('bloomGL');
-  if(!bloomCanvas) return null;
+  if(!bloomCanvas){
+    console.warn('[Aphelion bloom] #bloomGL element not found; bloom disabled.');
+    return null;
+  }
   const gl = bloomCanvas.getContext('webgl', {
     alpha: true, premultipliedAlpha: false, antialias: false, depth: false, stencil: false,
   });
   if(!gl){
-    console.warn('Aphelion: WebGL not available, bloom disabled.');
+    console.warn('[Aphelion bloom] WebGL context unavailable; bloom disabled.');
     bloomCanvas.style.display = 'none';
     return null;
   }
+  // Renderer / vendor strings are useful to know which GPU path
+  // Chrome chose (SwiftShader fallback vs hardware), and they often
+  // explain why a Gaussian blur looks subtly different on different
+  // machines.
+  const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  const vendor   = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)   : gl.getParameter(gl.VENDOR);
+  const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+  console.log('[Aphelion bloom] WebGL activated. vendor=%s renderer=%s', vendor, renderer);
 
   const VERT = `attribute vec2 position;
 varying vec2 vUv;
@@ -2035,10 +2046,16 @@ void main(){
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
+  let _firstRender = true;
   function render(sourceCanvas, intensity, radius){
     if(!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return;
     const W = sourceCanvas.width, H = sourceCanvas.height;
     ensureSize(W, H);
+
+    if(_firstRender){
+      console.log('[Aphelion bloom] first render: %dx%d intensity=%f radius=%f', W, H, intensity, radius);
+      _firstRender = false;
+    }
 
     if(intensity < 0.02){ clear(); return; }
 
