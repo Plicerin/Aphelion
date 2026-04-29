@@ -2174,8 +2174,12 @@ function reduce(state, action){
       // Hull breach. Pod-eject simulacrum: full hull + fuel back,
       // half the cargo lost, credits preserved (banks beat space
       // pirates), player parked at the system origin again. Stays
-      // in the current system — escaping back to Lave is a heavier
-      // punishment we can layer on later.
+      // in the current system. respawnGen bumps so the renderer
+      // rebuilds systemBodies — NPCs go back to their deterministic
+      // spawn positions instead of staying parked next to the
+      // wreckage chasing the new pod. respawnInvulnT gives a 3-sec
+      // grace window so the player can orient before being shot at.
+      // wantedT clears — death is the punishment.
       const halvedCargo = {};
       for(const k of Object.keys(state.cargo || {})){
         const v = state.cargo[k];
@@ -2189,6 +2193,9 @@ function reduce(state, action){
         cargo:  halvedCargo,
         ship:   INITIAL_SHIP,
         dockingT: 0,
+        respawnGen: (state.respawnGen ?? 0) + 1,
+        respawnInvulnT: 3.0,
+        wantedT: 0,
       };
     }
     case 'open-chart':
@@ -3352,8 +3359,13 @@ function drawExplosion(layer, px, py, depthZ, explodingT){
 }
 
 function renderFlight(state, theme, dt){
-  // Maintain system bodies in sync with current system.
-  const seedKey = state.currentSystemSeed ? state.currentSystemSeed.join(',') : null;
+  // Maintain system bodies in sync with current system. Key includes
+  // respawnGen so a death triggers a fresh systemBodies build —
+  // pirates get re-instantiated at their deterministic spawn
+  // positions instead of staying camped on the wreckage.
+  const seedKey = state.currentSystemSeed
+    ? state.currentSystemSeed.join(',') + '#' + (state.respawnGen ?? 0)
+    : null;
   if(seedKey !== systemBodiesSeed){
     systemBodiesSeed = seedKey;
     if(state.currentSystemSeed){
@@ -4704,6 +4716,8 @@ let game = {
   shipHp: _initialShipHp,   // persisted across reloads (v3+ save)
   kills:  _initialKills,    // persisted across reloads (v4+ save)
   wantedT: 0,               // transient — seconds remaining as wanted
+  respawnGen: 0,            // transient — bumps on death so npcs re-spawn
+  respawnInvulnT: 0,        // transient — seconds of post-death invuln
   themeId: loadSavedThemeId(),
   glowMul: loadGlow(),       // user pref, separate from save data
 };
@@ -5165,6 +5179,11 @@ function frame(now){
     if((game.wantedT ?? 0) > 0){
       game = { ...game, wantedT: Math.max(0, game.wantedT - dt) };
     }
+    // Decay post-respawn invuln so pirates can't insta-kill the
+    // pod before the player has a chance to look around.
+    if((game.respawnInvulnT ?? 0) > 0){
+      game = { ...game, respawnInvulnT: Math.max(0, game.respawnInvulnT - dt) };
+    }
     // NPC behaviour tick — pirates pursue, traders flee from nearby
     // pirates, police pursue when the player is wanted (otherwise
     // parked). Each npc reads the snapshot of the previous frame's
@@ -5212,18 +5231,21 @@ function frame(now){
       // Incoming hostile fire. Pirates always shoot when on target;
       // police shoot when on target AND the player is wanted. Hitting
       // 0 hp triggers the destroyed reducer (resets ship pose + fuel,
-      // halves cargo, full hp).
-      const playerWanted = (game.wantedT ?? 0) > 0;
-      const newHp = applyHostileFire(
-        game.shipHp ?? PLAYER_MAX_HP,
-        systemBodies.npcs,
-        game.ship.position,
-        playerWanted,
-        dt,
-      );
-      if(newHp !== game.shipHp){
-        game = { ...game, shipHp: newHp };
-        if(newHp <= 0) dispatch({ type: 'destroyed' });
+      // halves cargo, full hp). Skipped during the post-respawn
+      // invuln window so pirates can't insta-kill the new pod.
+      if((game.respawnInvulnT ?? 0) <= 0){
+        const playerWanted = (game.wantedT ?? 0) > 0;
+        const newHp = applyHostileFire(
+          game.shipHp ?? PLAYER_MAX_HP,
+          systemBodies.npcs,
+          game.ship.position,
+          playerWanted,
+          dt,
+        );
+        if(newHp !== game.shipHp){
+          game = { ...game, shipHp: newHp };
+          if(newHp <= 0) dispatch({ type: 'destroyed' });
+        }
       }
     }
     // Docking timer — only meaningful when there's an anchor in this system.
