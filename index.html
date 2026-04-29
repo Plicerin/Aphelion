@@ -802,33 +802,37 @@
     letter-spacing: 0.22em;
   }
 
-  /* Jump-denied flash — appears briefly when a hyperspace dispatch is
+  /* Jump-denied flash — appears prominently when a hyperspace dispatch is
      rejected, so the user understands why nothing happened. */
   #jump-denied {
     position: fixed;
-    top: 35%;
+    top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 9;
+    z-index: 12;
     color: var(--warn);
-    text-shadow: 0 0 14px var(--warn);
-    font-size: 16px;
+    text-shadow: 0 0 18px var(--warn), 0 0 6px var(--warn);
+    font-size: 28px;
     font-weight: 700;
-    letter-spacing: 0.28em;
+    letter-spacing: 0.3em;
     text-transform: uppercase;
-    padding: 16px 28px;
-    border: 1px solid var(--warn);
-    border-radius: 6px;
-    background: rgba(20, 6, 6, 0.6);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    padding: 28px 48px;
+    border: 2px solid var(--warn);
+    border-radius: 8px;
+    background: rgba(40, 8, 8, 0.78);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     pointer-events: none;
-    animation: jump-denied-fade 1.6s ease-out forwards;
+    animation: jump-denied-fade 3s ease-out forwards;
+    box-shadow: 0 0 40px rgba(255, 184, 74, 0.35);
+    text-align: center;
+    white-space: nowrap;
   }
   @keyframes jump-denied-fade {
-    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
-    12%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-    65%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.85); }
+    8%   { opacity: 1; transform: translate(-50%, -50%) scale(1.02); }
+    14%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    78%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
   }
 
@@ -3692,15 +3696,32 @@ function tickCountdown(dt){
   if(countdown.remaining <= 0){
     const target = countdown.target;
     cancelCountdown();
+    // Diagnostic log so we can see exactly what's happening if the
+    // jump still misbehaves. Removable once we're confident.
+    const cur = game.currentSystemSeed
+      ? findSystemBySeed(game.galaxies, game.currentSystemSeed)
+      : null;
+    const ly = cur ? Math.hypot((target.x-cur.x)*0.5, (target.y-cur.y)*0.5) : null;
+    const r = jumpReadiness(game, target);
+    console.log('[jump] countdown complete →', {
+      from: cur?.name, to: target.name, ly, fuel: game.fuel,
+      readyCheck: r,
+      shipPos: game.ship.position,
+    });
     dispatch({ type: 'select-system', seed: target.seed });
     const beforeScreen = game.screen;
     dispatch({ type: 'begin-hyperspace' });
+    console.log('[jump] after dispatch →', {
+      screenBefore: beforeScreen, screenAfter: game.screen,
+      selectedSystemSeed: game.selectedSystemSeed,
+      currentSystemSeed: game.currentSystemSeed,
+    });
     chartLocked = null;
     // Defense in depth: if the dispatch failed (jumpReadiness should
     // have caught it earlier, but in case there's a discrepancy) tell
     // the player rather than silently dumping them on the chart.
     if(game.screen === beforeScreen){
-      const r = jumpReadiness(game, target);
+      console.warn('[jump] dispatch silently rejected — staying on chart. Reason:', r.reason);
       showJumpDenied(r.reason || 'Jump denied');
     }
     return;
