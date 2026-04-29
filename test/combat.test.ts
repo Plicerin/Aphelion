@@ -8,11 +8,16 @@ import {
   laserTarget,
   applyLaserDamage,
   advanceExplosions,
+  pirateIsFiring,
+  applyPirateFire,
   LASER_RANGE,
   LASER_DPS,
   NPC_MAX_HP,
   NPC_HIT_RADIUS,
   EXPLOSION_DURATION,
+  NPC_LASER_RANGE,
+  NPC_PIRATE_DPS,
+  PLAYER_MAX_HP,
 } from '../src/sim/combat';
 import type { NpcShip } from '../src/sim/npc';
 import type { Vec3 } from '../src/sim/vec';
@@ -125,6 +130,85 @@ describe('applyLaserDamage', () => {
     const next = applyLaserDamage([a, b], 0, LASER_DPS, 0.1);
     expect(next[0]).not.toBe(a);
     expect(next[1]).toBe(b);
+  });
+});
+
+describe('pirateIsFiring', () => {
+  const playerOrigin: Vec3 = [0, 0, 0];
+
+  it('returns false for non-pirate roles', () => {
+    const trader = npc([0, 0, 30], { role: 'trader', yaw: Math.PI });
+    const police = npc([0, 0, 30], { role: 'police', yaw: Math.PI });
+    expect(pirateIsFiring(trader, playerOrigin)).toBe(false);
+    expect(pirateIsFiring(police, playerOrigin)).toBe(false);
+  });
+
+  it('returns false when pirate is exploding', () => {
+    const dying = npc([0, 0, 20], { yaw: Math.PI, explodingT: 0.3 });
+    expect(pirateIsFiring(dying, playerOrigin)).toBe(false);
+  });
+
+  it('returns false when pirate is out of NPC_LASER_RANGE', () => {
+    // Pointing at player but far away. Pirate at z=80 facing -z (yaw=π) → toward origin.
+    const far = npc([0, 0, NPC_LASER_RANGE + 5], { yaw: Math.PI });
+    expect(pirateIsFiring(far, playerOrigin)).toBe(false);
+  });
+
+  it('returns false when pirate is not facing the player', () => {
+    // Pirate at z=20 but facing AWAY from the player (yaw=0 = +z).
+    const wrongWay = npc([0, 0, 20], { yaw: 0 });
+    expect(pirateIsFiring(wrongWay, playerOrigin)).toBe(false);
+  });
+
+  it('returns true when pirate is in range and facing the player', () => {
+    // Pirate at z=20, facing -z (yaw=π) → pointing at origin.
+    const onTarget = npc([0, 0, 20], { yaw: Math.PI });
+    expect(pirateIsFiring(onTarget, playerOrigin)).toBe(true);
+  });
+});
+
+describe('applyPirateFire', () => {
+  const playerOrigin: Vec3 = [0, 0, 0];
+  const dt = 0.1;
+
+  it('returns hp unchanged when no pirates are firing', () => {
+    const trader = npc([0, 0, 20], { role: 'trader', yaw: Math.PI });
+    const newHp = applyPirateFire(PLAYER_MAX_HP, [trader], playerOrigin, dt);
+    expect(newHp).toBe(PLAYER_MAX_HP);
+  });
+
+  it('drains hp by NPC_PIRATE_DPS * dt for one firing pirate', () => {
+    const onTarget = npc([0, 0, 20], { yaw: Math.PI });
+    const newHp = applyPirateFire(PLAYER_MAX_HP, [onTarget], playerOrigin, dt);
+    expect(newHp).toBeCloseTo(PLAYER_MAX_HP - NPC_PIRATE_DPS * dt, 5);
+  });
+
+  it('stacks damage when multiple pirates are on target', () => {
+    const a = npc([0, 0, 20], { yaw: Math.PI });
+    const b = npc([1, 0, 20], { yaw: Math.PI });
+    const newHp = applyPirateFire(PLAYER_MAX_HP, [a, b], playerOrigin, dt);
+    expect(newHp).toBeCloseTo(PLAYER_MAX_HP - 2 * NPC_PIRATE_DPS * dt, 5);
+  });
+
+  it('clamps player hp at zero — does not go negative', () => {
+    const onTarget = npc([0, 0, 20], { yaw: Math.PI });
+    const newHp = applyPirateFire(1, [onTarget], playerOrigin, 1.0);
+    expect(newHp).toBe(0);
+  });
+
+  it('returns 0 unchanged when player is already at 0 hp', () => {
+    const onTarget = npc([0, 0, 20], { yaw: Math.PI });
+    const newHp = applyPirateFire(0, [onTarget], playerOrigin, dt);
+    expect(newHp).toBe(0);
+  });
+
+  it('ignores pirates that are not firing (out of range, wrong way, dying)', () => {
+    const far     = npc([0, 0, NPC_LASER_RANGE + 5], { yaw: Math.PI });
+    const wrong   = npc([0, 0, 20],                  { yaw: 0 });
+    const dying   = npc([0, 0, 20],                  { yaw: Math.PI, explodingT: 0.3 });
+    const onTarget = npc([0, 0, 25],                 { yaw: Math.PI });
+    const newHp = applyPirateFire(PLAYER_MAX_HP, [far, wrong, dying, onTarget], playerOrigin, dt);
+    expect(newHp).toBeCloseTo(PLAYER_MAX_HP - NPC_PIRATE_DPS * dt, 5);
   });
 });
 

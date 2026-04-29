@@ -1902,12 +1902,17 @@ function stepNpc(npc, ctx, dt){
 }
 
 /* ===== 5g. Combat (mirror of src/sim/combat.ts) =====
- * Front laser hit detection, damage, explosion lifecycle. */
-const LASER_RANGE        = 80;
-const LASER_DPS          = 80;
-const NPC_MAX_HP         = 100;
-const NPC_HIT_RADIUS     = 2.5;
-const EXPLOSION_DURATION = 1.0;
+ * Front laser hit detection, damage, explosion lifecycle, pirate
+ * fire-back logic. */
+const LASER_RANGE          = 80;
+const LASER_DPS            = 80;
+const NPC_MAX_HP           = 100;
+const NPC_HIT_RADIUS       = 2.5;
+const EXPLOSION_DURATION   = 1.0;
+const PLAYER_MAX_HP        = 100;
+const NPC_PIRATE_DPS       = 40;
+const NPC_LASER_RANGE      = 60;
+const NPC_FIRING_CONE_DOT  = 0.92;
 
 function _rayHitsSphere(ro, rd, sc, radius){
   const ox = sc[0] - ro[0];
@@ -1953,6 +1958,28 @@ function advanceExplosions(npcs, dt){
     }
   }
   return out;
+}
+function pirateIsFiring(npc, playerPos){
+  if(npc.role !== 'pirate') return false;
+  if(npc.explodingT > 0 || npc.hp <= 0) return false;
+  const dx = playerPos[0] - npc.position[0];
+  const dz = playerPos[2] - npc.position[2];
+  const dist = Math.hypot(dx, dz);
+  if(dist > NPC_LASER_RANGE || dist < 0.001) return false;
+  const fx = Math.sin(npc.yaw);
+  const fz = Math.cos(npc.yaw);
+  const tox = dx / dist;
+  const toz = dz / dist;
+  return fx * tox + fz * toz > NPC_FIRING_CONE_DOT;
+}
+function applyPirateFire(playerHp, npcs, playerPos, dt){
+  if(playerHp <= 0) return 0;
+  let totalDps = 0;
+  for(const npc of npcs){
+    if(pirateIsFiring(npc, playerPos)) totalDps += NPC_PIRATE_DPS;
+  }
+  if(totalDps === 0) return playerHp;
+  return Math.max(0, playerHp - totalDps * dt);
 }
 
 /* ===== 5b. Trade anchor =====
@@ -2056,6 +2083,27 @@ function reduce(state, action){
       // Leave the docked screen and return to flight, slightly clear of
       // the anchor so the docking timer doesn't immediately retrigger.
       return { ...state, screen:'flight', dockingT: 0, ship: INITIAL_SHIP };
+    case 'destroyed': {
+      // Hull breach. Pod-eject simulacrum: full hull + fuel back,
+      // half the cargo lost, credits preserved (banks beat space
+      // pirates), player parked at the system origin again. Stays
+      // in the current system — escaping back to Lave is a heavier
+      // punishment we can layer on later.
+      const halvedCargo = {};
+      for(const k of Object.keys(state.cargo || {})){
+        const v = state.cargo[k];
+        if(typeof v === 'number' && v > 0) halvedCargo[k] = Math.floor(v / 2);
+      }
+      return {
+        ...state,
+        screen: 'flight',
+        shipHp: PLAYER_MAX_HP,
+        fuel:   FUEL_MAX_LY,
+        cargo:  halvedCargo,
+        ship:   INITIAL_SHIP,
+        dockingT: 0,
+      };
+    }
     case 'open-chart':
       return { ...state, screen:'chart' };
     case 'close-chart':
@@ -3868,6 +3916,28 @@ function renderFlight(state, theme, dt){
     prevTrail = [x, y];
   }
 
+  // Incoming-fire indicators. Every pirate currently firing on the
+  // player gets a warn-coloured '!' placed on a centered ellipse
+  // around the canopy, in the direction of the pirate's player-local
+  // bearing. So a pirate behind you puts the marker near the bottom,
+  // one off to your right puts it on the right edge, etc.
+  if(systemBodies && systemBodies.npcs){
+    const fireRadX = W * 0.40;
+    const fireRadY = H * 0.30;
+    const fireCY = H * 0.42;
+    for(const npc of systemBodies.npcs){
+      if(!pirateIsFiring(npc, state.ship.position)) continue;
+      const wx = npc.position[0] - state.ship.position[0];
+      const wy = npc.position[1] - state.ship.position[1];
+      const wz = npc.position[2] - state.ship.position[2];
+      const local = qRotate(invOrient, [wx, wy, wz]);
+      const bearing = Math.atan2(local[0], local[2]);    // 0=ahead, ±π=behind
+      const ix = W / 2 + Math.sin(bearing) * fireRadX;
+      const iy = fireCY - Math.cos(bearing) * fireRadY;
+      instSet(lExplosion, Math.round(ix/iCell), Math.round(iy/iCell), 0.95, '!');
+    }
+  }
+
   // Radar blips. Project each non-exploding NPC onto the scanner
   // ellipse based on its bearing in the player-local frame: forward
   // is up on the disk, right is right. NPCs inside SCANNER_RANGE map
@@ -4015,28 +4085,37 @@ function renderFlight(state, theme, dt){
     y: sBarTopY + i * sBarRowH + sBarH / 2,
   }));
 
-  // Mini-bars below scanner: SPD (real throttle) / ENG / HEAT (cosmetic).
+  // Mini-bars below scanner: SPD / ENG / HULL / HEAT.
+  // HULL is the player's hp readout (real, drains under fire).
+  // HEAT is cabin temperature near the local sun (cosmetic).
+  // ENG remains cosmetic until the v0.2 capacitor model lands.
   const barY = rcy + rh + 4;
-  const barW = 78, barH = 8, barGap = 14;
-  const totalBarW = 3*barW + 2*barGap;
+  const barW = 60, barH = 8, barGap = 12;
+  const totalBarW = 4*barW + 3*barGap;
   const barLeftX = rcx - totalBarW/2;
   const speedPct  = Math.max(0, Math.min(1, state.ship.throttle));
-  const energyPct = 1.0;     // cosmetic — full until v0.2 capacitor model
-  // HEAT is cabin temperature now: rises near the local sun.
+  const energyPct = 1.0;
+  const hullPctP  = Math.max(0, Math.min(1, (state.shipHp ?? PLAYER_MAX_HP) / PLAYER_MAX_HP));
   const heatPct   = systemBodies
     ? cabinHeat(state.ship.position, systemBodies.sun.pos)
     : 0;
+  // Per-bar layer routing: HULL goes warn-coloured + atmospheric
+  // bloom (lExplosion) when below 25% so 'about to die' reads at a
+  // glance; HEAT goes warn-coloured above 75% for the same reason.
+  const hullLayer = hullPctP < 0.25 ? lExplosion : lDash;
+  const heatLayer = heatPct  > 0.75 ? lExplosion : lDash;
   const miniBars = [
-    { val: speedPct,  x: barLeftX },
-    { val: energyPct, x: barLeftX + barW + barGap },
-    { val: heatPct,   x: barLeftX + 2*(barW + barGap) },
+    { val: speedPct,  x: barLeftX,                          layer: lDash    },
+    { val: energyPct, x: barLeftX + 1*(barW + barGap),      layer: lDash    },
+    { val: hullPctP,  x: barLeftX + 2*(barW + barGap),      layer: hullLayer },
+    { val: heatPct,   x: barLeftX + 3*(barW + barGap),      layer: heatLayer },
   ];
   for(const b of miniBars){
     instLine(lDash, b.x/iCell, barY/iCell, (b.x+barW)/iCell, barY/iCell, 0.55, '─');
     instLine(lDash, b.x/iCell, (barY+barH)/iCell, (b.x+barW)/iCell, (barY+barH)/iCell, 0.55, '─');
     const fillW = barW * Math.max(0, Math.min(1, b.val));
     const fillCh = blockChar(b.val);
-    instLine(lDash, b.x/iCell, (barY+barH/2)/iCell, (b.x+fillW)/iCell, (barY+barH/2)/iCell, 0.95, fillCh);
+    instLine(b.layer, b.x/iCell, (barY+barH/2)/iCell, (b.x+fillW)/iCell, (barY+barH/2)/iCell, 0.95, fillCh);
   }
 
   /* ============================================================
@@ -4125,11 +4204,17 @@ function renderFlight(state, theme, dt){
     }
   }
 
-  // Mini-bar labels (SPD / ENG / HEAT) below the scanner.
-  const _miniLabels = ['SPD','ENG','HEAT'];
-  for(let i=0; i<3; i++){
+  // Mini-bar labels (SPD / ENG / HULL / HEAT) below the scanner.
+  // HULL flips to warn colour when the bar's filling does, so the
+  // label and bar agree on "about to die".
+  const _miniLabels = ['SPD','ENG','HULL','HEAT'];
+  const _hullWarn = hullPctP < 0.25;
+  const _heatWarn = heatPct  > 0.75;
+  const _miniWarn = [false, false, _hullWarn, _heatWarn];
+  for(let i=0; i<4; i++){
     const xMid = barLeftX + i*(barW + barGap) + barW/2;
-    glowTextHUD(_miniLabels[i], xMid, barY + barH + 8, _amber, 8, '500');
+    const colour = _miniWarn[i] ? resolveColor(theme.hues.warn) : _amber;
+    glowTextHUD(_miniLabels[i], xMid, barY + barH + 8, colour, 8, '500');
   }
 
   /* ---- HUD readouts (HTML elements) ---- */
@@ -4406,7 +4491,7 @@ const _startingSystem = _initialGalaxies[0].systems[0];
    reloads. Only fields the player has *chosen* are saved — everything
    that's a function of the seed regenerates, everything transient resets. */
 const SAVE_KEY = 'aphelion.save';
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 function saveGame(data){
   try {
     const payload = {
@@ -4416,6 +4501,7 @@ function saveGame(data){
       cargo: data.cargo,
       credits: data.credits,
       fuel: data.fuel,
+      shipHp: data.shipHp,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
     return true;
@@ -4447,10 +4533,16 @@ function loadGame(){
       if(typeof p.fuel !== 'number' || !Number.isFinite(p.fuel) || p.fuel < 0) return null;
       fuel = p.fuel;
     }
+    // v3 field: ship hull HP. v1/v2 saves get a full hull on load.
+    let shipHp = PLAYER_MAX_HP;
+    if(p.version >= 3){
+      if(typeof p.shipHp !== 'number' || !Number.isFinite(p.shipHp) || p.shipHp < 0) return null;
+      shipHp = p.shipHp;
+    }
     return {
       galaxyIdx: p.galaxyIdx,
       currentSystemSeed: p.currentSystemSeed,
-      cargo, credits, fuel,
+      cargo, credits, fuel, shipHp,
     };
   } catch { return null; }
 }
@@ -4463,6 +4555,7 @@ let _initialSystemSeed = _startingSystem.seed;
 let _initialCargo = emptyCargo();
 let _initialCredits = INITIAL_CREDITS;
 let _initialFuel = FUEL_MAX_LY;
+let _initialShipHp = PLAYER_MAX_HP;
 if(_savedGame){
   // Validate the saved system actually exists in the saved galaxy. Saves
   // older than the current seed-generation algorithm could reference a
@@ -4477,11 +4570,13 @@ if(_savedGame){
     _initialGalaxyIdx = _savedGame.galaxyIdx;
     _initialSystemSeed = _savedGame.currentSystemSeed;
   }
-  // Cargo / credits / fuel are independent of system validity — keep
-  // them across reloads even if the system seed turned stale.
+  // Cargo / credits / fuel / shipHp are independent of system
+  // validity — keep them across reloads even if the system seed
+  // turned stale.
   _initialCargo   = { ...emptyCargo(), ..._savedGame.cargo };
   _initialCredits = _savedGame.credits;
   _initialFuel    = Math.min(FUEL_MAX_LY, _savedGame.fuel);
+  _initialShipHp  = Math.min(PLAYER_MAX_HP, Math.max(0, _savedGame.shipHp));
 }
 
 let game = {
@@ -4496,6 +4591,7 @@ let game = {
   dockingT: 0,              // 0..1 progress toward "tuning in" at anchor
   cargo: _initialCargo,     // persisted across reloads (v2+ save)
   credits: _initialCredits, // persisted across reloads (v2+ save)
+  shipHp: _initialShipHp,   // persisted across reloads (v3+ save)
   themeId: loadSavedThemeId(),
   glowMul: loadGlow(),       // user pref, separate from save data
 };
@@ -4509,7 +4605,8 @@ function dispatch(action){
   // dispatch, so they save explicitly after each transaction.
   if(prev.galaxyIdx !== game.galaxyIdx ||
      prev.currentSystemSeed !== game.currentSystemSeed ||
-     prev.fuel !== game.fuel){
+     prev.fuel !== game.fuel ||
+     prev.shipHp !== game.shipHp){
     persistGame();
   }
 }
@@ -4522,6 +4619,7 @@ function persistGame(){
     cargo: game.cargo,
     credits: game.credits,
     fuel: game.fuel,
+    shipHp: game.shipHp,
   });
 }
 /* ---- Trade screen rendering ---- */
@@ -4942,6 +5040,16 @@ function frame(now){
         }
       }
       systemBodies.npcs = advanceExplosions(systemBodies.npcs, dt);
+
+      // Incoming fire — every pirate that has line on the player
+      // contributes NPC_PIRATE_DPS while we're inside their cone.
+      // Hitting 0 hp triggers the destroyed reducer (resets ship
+      // pose + fuel, halves cargo, full hp).
+      const newHp = applyPirateFire(game.shipHp ?? PLAYER_MAX_HP, systemBodies.npcs, game.ship.position, dt);
+      if(newHp !== game.shipHp){
+        game = { ...game, shipHp: newHp };
+        if(newHp <= 0) dispatch({ type: 'destroyed' });
+      }
     }
     // Docking timer — only meaningful when there's an anchor in this system.
     if(systemBodies && systemBodies.anchor){

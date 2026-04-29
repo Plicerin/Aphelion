@@ -26,11 +26,13 @@
 import type { SeedTriple } from '../types';
 
 const STORAGE_KEY = 'aphelion.save';
-const SAVE_VERSION = 2;
+const SAVE_VERSION = 3;
 
 /** Default values for v2 fields when migrating from v1. */
 const DEFAULT_CREDITS = 100;
 const DEFAULT_FUEL = 7;
+/** Default value for the v3 shipHp field when migrating from v2. */
+const DEFAULT_SHIP_HP = 100;
 
 /**
  * The persistent slice of game state. Anything not in this struct does
@@ -46,6 +48,8 @@ export interface SaveData {
   readonly credits: number;
   /** Fuel in light-years. v2+. */
   readonly fuel: number;
+  /** Hull HP. v3+. Defaults to 100 (full) when migrating from v2. */
+  readonly shipHp: number;
 }
 
 /** Write a save. Returns true on success, false if storage is unavailable. */
@@ -120,10 +124,18 @@ function validateAndMigrate(x: unknown): SaveData | null {
     fuel = o.fuel;
   }
 
+  // v3+ field. v1/v2 saves get a full hull on load — better than
+  // dropping the player into combat at zero hp from a stale save.
+  let shipHp: number = DEFAULT_SHIP_HP;
+  if (o.version >= 3) {
+    if (typeof o.shipHp !== 'number' || !Number.isFinite(o.shipHp) || o.shipHp < 0) return null;
+    shipHp = o.shipHp;
+  }
+
   return {
     version: SAVE_VERSION,
     galaxyIdx: o.galaxyIdx,
     currentSystemSeed: o.currentSystemSeed as unknown as SeedTriple,
-    cargo, credits, fuel,
+    cargo, credits, fuel, shipHp,
   };
 }

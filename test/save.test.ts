@@ -23,6 +23,7 @@ const sampleSave = {
   cargo: { food: 5, computers: 2 },
   credits: 4250,
   fuel: 3.5,
+  shipHp: 75,
 };
 
 describe('save / load', () => {
@@ -34,7 +35,7 @@ describe('save / load', () => {
     expect(loadGame()).toBeNull();
   });
 
-  it('round-trips a valid save (cargo, credits, fuel preserved)', () => {
+  it('round-trips a valid save (cargo, credits, fuel, shipHp preserved)', () => {
     const ok = saveGame(sampleSave);
     expect(ok).toBe(true);
     const loaded = loadGame();
@@ -44,7 +45,8 @@ describe('save / load', () => {
     expect(loaded!.cargo).toEqual({ food: 5, computers: 2 });
     expect(loaded!.credits).toBe(4250);
     expect(loaded!.fuel).toBe(3.5);
-    expect(loaded!.version).toBe(2);
+    expect(loaded!.shipHp).toBe(75);
+    expect(loaded!.version).toBe(3);
   });
 
   it('clearSave removes the save', () => {
@@ -108,7 +110,7 @@ describe('save / load', () => {
     expect(loadGame()).toBeNull();
   });
 
-  it('migrates a v1 save: applies defaults for cargo / credits / fuel', () => {
+  it('migrates a v1 save: applies defaults for cargo / credits / fuel / shipHp', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         version: 1, galaxyIdx: 2, currentSystemSeed: [1, 2, 3],
@@ -120,7 +122,34 @@ describe('save / load', () => {
     expect(loaded!.cargo).toEqual({});
     expect(loaded!.credits).toBe(100);
     expect(loaded!.fuel).toBe(7);
-    expect(loaded!.version).toBe(2);
+    expect(loaded!.shipHp).toBe(100);
+    expect(loaded!.version).toBe(3);
+  });
+
+  it('migrates a v2 save: preserves cargo/credits/fuel and defaults shipHp to 100', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 2, galaxyIdx: 0, currentSystemSeed: [1, 2, 3],
+        cargo: { food: 3 }, credits: 200, fuel: 5,
+      }));
+    } catch { return; }
+    const loaded = loadGame();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.cargo).toEqual({ food: 3 });
+    expect(loaded!.credits).toBe(200);
+    expect(loaded!.fuel).toBe(5);
+    expect(loaded!.shipHp).toBe(100);
+    expect(loaded!.version).toBe(3);
+  });
+
+  it('rejects v3 save with negative shipHp', () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: 3, galaxyIdx: 0, currentSystemSeed: [0, 0, 0],
+        cargo: {}, credits: 0, fuel: 0, shipHp: -10,
+      }));
+    } catch { return; }
+    expect(loadGame()).toBeNull();
   });
 
   it('rejects v2+ save with non-object cargo', () => {
