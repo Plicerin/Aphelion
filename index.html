@@ -91,6 +91,42 @@
   #webgl-diag .diag-val   { color: var(--ink); word-break: break-all; }
   #webgl-diag .diag-val.warn { color: var(--warn); }
   #webgl-diag .diag-val.ok   { color: var(--accent); }
+  #webgl-diag .diag-bake-strip {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  #webgl-diag .diag-bake-title {
+    font-size: 9px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    margin-bottom: 6px;
+  }
+  #webgl-diag .diag-bake-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  #webgl-diag .diag-bake-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  #webgl-diag .diag-bake-cell img {
+    width: 100px; height: 100px;
+    background: #02030a;
+    border: 1px solid var(--border);
+    image-rendering: pixelated;
+    cursor: zoom-in;
+  }
+  #webgl-diag .diag-bake-cell .lbl {
+    font-size: 8px;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
 
   /* ============== Title bar (shared across screens) ============== */
   #title {
@@ -1192,6 +1228,10 @@
   <div id="webgl-diag" class="show-flight">
     <div class="diag-title">WebGL · Bloom Diagnostics</div>
     <div id="webgl-diag-rows"></div>
+    <div class="diag-bake-strip">
+      <div class="diag-bake-title">Per-glyph atlas bake test</div>
+      <div class="diag-bake-row" id="webgl-diag-bake"></div>
+    </div>
   </div>
 
   <button id="open-chart-btn" class="show-flight" type="button">◤ Galactic Chart</button>
@@ -1943,6 +1983,69 @@ resize();
   setDiag(rows);
 
   console.log('[Aphelion bloom-diag] %o', Object.fromEntries(rows.map(r => [r[0], r[1]])));
+
+  // Per-glyph bake test. Renders the stacked-shadowBlur recipe for
+  // each profile to a 200x200 tile and emits the resulting bitmap as
+  // a data URL. If the displayed tile shows a fat halo extending to
+  // the tile edges, the BAKE is correct and the bug is in how it's
+  // drawn back. If the tile shows a tight halo or none, the bake
+  // target is too small (or the primitive isn't actually blurring),
+  // and we'd need padding + offset, not a different blur primitive.
+  bakeTestStrip();
+
+  function bakeTestStrip(){
+    const host = document.getElementById('webgl-diag-bake');
+    if(!host) return;
+    const PROFILES = {
+      tight:  [{blur:1, alpha:0.95}, {blur:3, alpha:0.80}],
+      normal: [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.70}, {blur:16, alpha:0.55}],
+      wide:   [{blur:1, alpha:0.95}, {blur:3, alpha:0.85}, {blur:8, alpha:0.75}, {blur:18, alpha:0.65}, {blur:32, alpha:0.50}],
+    };
+    for(const [name, passes] of Object.entries(PROFILES)){
+      const url = bakeTile('X', 180, 100, 60, passes); // hue=180 (cyan), sat=100, light=60
+      const cell = document.createElement('div');
+      cell.className = 'diag-bake-cell';
+      const img = document.createElement('img');
+      img.src = url;
+      img.title = `${name} profile bake — click to open full size`;
+      img.addEventListener('click', () => window.open(url, '_blank'));
+      const lbl = document.createElement('span');
+      lbl.className = 'lbl';
+      lbl.textContent = name;
+      cell.appendChild(img); cell.appendChild(lbl);
+      host.appendChild(cell);
+    }
+  }
+
+  // Bake one tile using the same stacked-shadowBlur recipe the atlas
+  // attempts used. Returns a PNG data URL so it can be displayed and
+  // opened in a separate tab for inspection.
+  function bakeTile(ch, hue, sat, lightness, passes){
+    const SIZE = 200;
+    const c = document.createElement('canvas');
+    c.width = SIZE; c.height = SIZE;
+    const cx = c.getContext('2d');
+    cx.font = '40px ui-monospace, "JetBrains Mono", monospace';
+    cx.textBaseline = 'middle';
+    cx.textAlign = 'center';
+    cx.globalCompositeOperation = 'lighter';
+    const N = passes.length;
+    for(let i = 0; i < N; i++){
+      const p = passes[i];
+      const t = N === 1 ? 1 : i / (N - 1);
+      const passSat   = Math.round(sat * t + 25 * (1 - t));
+      const passLight = Math.min(95, Math.round(lightness * t + 92 * (1 - t)));
+      const passColor = `hsl(${hue}, ${passSat}%, ${passLight}%)`;
+      cx.shadowColor = passColor;
+      cx.shadowBlur  = p.blur;
+      cx.fillStyle   = passColor;
+      cx.globalAlpha = p.alpha;
+      cx.fillText(ch, SIZE/2, SIZE/2);
+    }
+    cx.globalCompositeOperation = 'source-over';
+    cx.globalAlpha = 1;
+    return c.toDataURL();
+  }
 
   function setDiag(rows){
     const host = document.getElementById('webgl-diag-rows');
