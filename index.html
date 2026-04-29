@@ -33,6 +33,11 @@
     z-index: 5;
   }
 
+  /* `isolation: isolate` makes body its own stacking context so the
+     mix-blend-mode on #bloomGL composites against #stage rather than
+     leaking up into whatever the browser considers the document
+     backdrop. Without this, blend modes can silently no-op. */
+  body { isolation: isolate; }
   #stage { position: fixed; inset: 0; display: block; z-index: 1; cursor: crosshair; }
   /* WebGL bloom overlay — receives the bloom postprocess output and
      composites over #stage with screen blending. Pointer-events off
@@ -2096,6 +2101,19 @@ void main(){
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Diagnostic: a 60x60 red square in the bottom-left of the GL
+    // canvas. If this square shows up on screen (it screen-blends
+    // over #stage to a vivid red), the GL canvas IS being composited
+    // and the bug is somewhere in the bloom pipeline. If it doesn't,
+    // the GL canvas is being hidden by something else (mix-blend-mode
+    // failure, stacking context, GPU sandbox, etc.). Remove once the
+    // glow is verified working.
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(0, 0, 60, 60);
+    gl.clearColor(1, 0.1, 0.1, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.SCISSOR_TEST);
   }
 
   return { render, clear };
