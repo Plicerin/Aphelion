@@ -982,6 +982,17 @@
     color: var(--warn);
     text-shadow: 0 0 6px var(--warn);
   }
+  #hWanted .v {
+    color: var(--warn);
+    text-shadow: 0 0 8px var(--warn);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    animation: wanted-pulse 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes wanted-pulse {
+    from { opacity: 0.55; }
+    to   { opacity: 1; }
+  }
   #hMassLock .v {
     color: var(--warn);
     text-shadow: 0 0 8px var(--warn);
@@ -1240,7 +1251,10 @@
     <div><span class="lbl">SYSTEM</span> <span class="v" id="hSystem">—</span></div>
     <div><span class="lbl">PITCH</span> <span class="v" id="hPitch">0°</span></div>
     <div><span class="lbl">YAW</span> <span class="v" id="hYaw">0°</span></div>
+    <div><span class="lbl">RANK</span> <span class="v" id="hRank">—</span></div>
+    <div><span class="lbl">KILLS</span> <span class="v" id="hKills">0</span></div>
     <div id="hMassLock" hidden><span class="v">⚠ MASS-LOCKED</span></div>
+    <div id="hWanted"   hidden><span class="v">⚠ WANTED</span></div>
   </div>
   <!-- WebGL diagnostics — cockpit only. Used to identify which GPU
        backend the browser is using; ANGLE / SwiftShader fallback is
@@ -1898,6 +1912,9 @@ function stepNpc(npc, ctx, dt){
   if(npc.explodingT > 0) return npc;
   if(npc.role === 'pirate') return _stepPirate(npc, ctx.playerPos, dt);
   if(npc.role === 'trader') return _stepTrader(npc, ctx.npcs, dt);
+  // Police only get out of dock while the player's wanted; same code
+  // path as pirate pursuit.
+  if(npc.role === 'police' && ctx.playerWanted) return _stepPirate(npc, ctx.playerPos, dt);
   return npc;
 }
 
@@ -1913,6 +1930,19 @@ const PLAYER_MAX_HP        = 100;
 const NPC_PIRATE_DPS       = 40;
 const NPC_LASER_RANGE      = 60;
 const NPC_FIRING_CONE_DOT  = 0.92;
+const WANTED_DURATION      = 30;
+const COMBAT_RANK_THRESHOLDS = [0, 1, 8, 16, 32, 64, 128, 256, 512];
+const COMBAT_RANK_NAMES = [
+  'Harmless','Mostly Harmless','Poor','Average','Above Average',
+  'Competent','Dangerous','Deadly','Elite',
+];
+function rankForKills(kills){
+  if(!Number.isFinite(kills) || kills < 0) return 0;
+  for(let i = COMBAT_RANK_THRESHOLDS.length - 1; i >= 0; i--){
+    if(kills >= COMBAT_RANK_THRESHOLDS[i]) return i;
+  }
+  return 0;
+}
 
 function _rayHitsSphere(ro, rd, sc, radius){
   const ox = sc[0] - ro[0];
@@ -1959,9 +1989,7 @@ function advanceExplosions(npcs, dt){
   }
   return out;
 }
-function pirateIsFiring(npc, playerPos){
-  if(npc.role !== 'pirate') return false;
-  if(npc.explodingT > 0 || npc.hp <= 0) return false;
+function _isOnTarget(npc, playerPos){
   const dx = playerPos[0] - npc.position[0];
   const dz = playerPos[2] - npc.position[2];
   const dist = Math.hypot(dx, dz);
@@ -1972,11 +2000,22 @@ function pirateIsFiring(npc, playerPos){
   const toz = dz / dist;
   return fx * tox + fz * toz > NPC_FIRING_CONE_DOT;
 }
-function applyPirateFire(playerHp, npcs, playerPos, dt){
+function pirateIsFiring(npc, playerPos){
+  if(npc.role !== 'pirate') return false;
+  if(npc.explodingT > 0 || npc.hp <= 0) return false;
+  return _isOnTarget(npc, playerPos);
+}
+function npcIsFiringOnPlayer(npc, playerPos, playerWanted){
+  if(npc.explodingT > 0 || npc.hp <= 0) return false;
+  if(npc.role === 'pirate') return _isOnTarget(npc, playerPos);
+  if(npc.role === 'police' && playerWanted) return _isOnTarget(npc, playerPos);
+  return false;
+}
+function applyHostileFire(playerHp, npcs, playerPos, playerWanted, dt){
   if(playerHp <= 0) return 0;
   let totalDps = 0;
   for(const npc of npcs){
-    if(pirateIsFiring(npc, playerPos)) totalDps += NPC_PIRATE_DPS;
+    if(npcIsFiringOnPlayer(npc, playerPos, playerWanted)) totalDps += NPC_PIRATE_DPS;
   }
   if(totalDps === 0) return playerHp;
   return Math.max(0, playerHp - totalDps * dt);
@@ -3918,15 +3957,17 @@ function renderFlight(state, theme, dt){
 
   // Incoming-fire indicators. Every pirate currently firing on the
   // player gets a warn-coloured '!' placed on a centered ellipse
-  // around the canopy, in the direction of the pirate's player-local
-  // bearing. So a pirate behind you puts the marker near the bottom,
-  // one off to your right puts it on the right edge, etc.
+  // around the canopy, in the direction of the npc's player-local
+  // bearing. Police shooting at a wanted player count too. So a
+  // pirate behind you puts the marker near the bottom, one off to
+  // your right puts it on the right edge, etc.
   if(systemBodies && systemBodies.npcs){
     const fireRadX = W * 0.40;
     const fireRadY = H * 0.30;
     const fireCY = H * 0.42;
+    const playerWantedR = (state.wantedT ?? 0) > 0;
     for(const npc of systemBodies.npcs){
-      if(!pirateIsFiring(npc, state.ship.position)) continue;
+      if(!npcIsFiringOnPlayer(npc, state.ship.position, playerWantedR)) continue;
       const wx = npc.position[0] - state.ship.position[0];
       const wy = npc.position[1] - state.ship.position[1];
       const wz = npc.position[2] - state.ship.position[2];
@@ -4244,6 +4285,17 @@ function renderFlight(state, theme, dt){
   } else {
     ml.hidden = true;
   }
+
+  // Combat rank + cumulative kills.
+  const _kills = state.kills ?? 0;
+  const _rankIdx = rankForKills(_kills);
+  document.getElementById('hRank').textContent = COMBAT_RANK_NAMES[_rankIdx];
+  document.getElementById('hKills').textContent = String(_kills);
+
+  // Wanted indicator: shown while wantedT > 0, hidden after the
+  // timer cools off.
+  const _wantedEl = document.getElementById('hWanted');
+  _wantedEl.hidden = !((state.wantedT ?? 0) > 0);
 }
 
 /* ===== 12. Hyperspace screen ===== */
@@ -4491,7 +4543,7 @@ const _startingSystem = _initialGalaxies[0].systems[0];
    reloads. Only fields the player has *chosen* are saved — everything
    that's a function of the seed regenerates, everything transient resets. */
 const SAVE_KEY = 'aphelion.save';
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 function saveGame(data){
   try {
     const payload = {
@@ -4502,6 +4554,7 @@ function saveGame(data){
       credits: data.credits,
       fuel: data.fuel,
       shipHp: data.shipHp,
+      kills: data.kills,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
     return true;
@@ -4539,10 +4592,17 @@ function loadGame(){
       if(typeof p.shipHp !== 'number' || !Number.isFinite(p.shipHp) || p.shipHp < 0) return null;
       shipHp = p.shipHp;
     }
+    // v4 field: cumulative kills for combat-rank. v1..v3 saves
+    // default to 0 — fresh combat record on load.
+    let kills = 0;
+    if(p.version >= 4){
+      if(typeof p.kills !== 'number' || !Number.isFinite(p.kills) || p.kills < 0) return null;
+      kills = Math.floor(p.kills);
+    }
     return {
       galaxyIdx: p.galaxyIdx,
       currentSystemSeed: p.currentSystemSeed,
-      cargo, credits, fuel, shipHp,
+      cargo, credits, fuel, shipHp, kills,
     };
   } catch { return null; }
 }
@@ -4556,6 +4616,7 @@ let _initialCargo = emptyCargo();
 let _initialCredits = INITIAL_CREDITS;
 let _initialFuel = FUEL_MAX_LY;
 let _initialShipHp = PLAYER_MAX_HP;
+let _initialKills = 0;
 if(_savedGame){
   // Validate the saved system actually exists in the saved galaxy. Saves
   // older than the current seed-generation algorithm could reference a
@@ -4577,6 +4638,7 @@ if(_savedGame){
   _initialCredits = _savedGame.credits;
   _initialFuel    = Math.min(FUEL_MAX_LY, _savedGame.fuel);
   _initialShipHp  = Math.min(PLAYER_MAX_HP, Math.max(0, _savedGame.shipHp));
+  _initialKills   = Math.max(0, Math.floor(_savedGame.kills ?? 0));
 }
 
 let game = {
@@ -4592,6 +4654,8 @@ let game = {
   cargo: _initialCargo,     // persisted across reloads (v2+ save)
   credits: _initialCredits, // persisted across reloads (v2+ save)
   shipHp: _initialShipHp,   // persisted across reloads (v3+ save)
+  kills:  _initialKills,    // persisted across reloads (v4+ save)
+  wantedT: 0,               // transient — seconds remaining as wanted
   themeId: loadSavedThemeId(),
   glowMul: loadGlow(),       // user pref, separate from save data
 };
@@ -4606,7 +4670,8 @@ function dispatch(action){
   if(prev.galaxyIdx !== game.galaxyIdx ||
      prev.currentSystemSeed !== game.currentSystemSeed ||
      prev.fuel !== game.fuel ||
-     prev.shipHp !== game.shipHp){
+     prev.shipHp !== game.shipHp ||
+     prev.kills !== game.kills){
     persistGame();
   }
 }
@@ -4620,6 +4685,7 @@ function persistGame(){
     credits: game.credits,
     fuel: game.fuel,
     shipHp: game.shipHp,
+    kills:  game.kills,
   });
 }
 /* ---- Trade screen rendering ---- */
@@ -5017,35 +5083,67 @@ function frame(now){
   if(game.screen === 'flight'){
     const controls = sampleControls();
     game = { ...game, ship: stepShip(game.ship, controls, dt) };
+    // Decay wanted timer regardless of npc list — once you stop
+    // shooting cops back, the heat cools off.
+    if((game.wantedT ?? 0) > 0){
+      game = { ...game, wantedT: Math.max(0, game.wantedT - dt) };
+    }
     // NPC behaviour tick — pirates pursue, traders flee from nearby
-    // pirates, police are unchanged in this slice. Each npc reads
-    // the snapshot of the previous frame's npc list, then all are
-    // updated simultaneously so behaviour is order-independent.
+    // pirates, police pursue when the player is wanted (otherwise
+    // parked). Each npc reads the snapshot of the previous frame's
+    // npc list so all updates happen simultaneously and order-
+    // independent.
     if(systemBodies && systemBodies.npcs){
       const ctxNpcs = systemBodies.npcs;
-      const ctx = { playerPos: game.ship.position, npcs: ctxNpcs };
-      systemBodies.npcs = ctxNpcs.map(n => stepNpc(n, ctx, dt));
+      const playerWanted = (game.wantedT ?? 0) > 0;
+      const stepCtx = { playerPos: game.ship.position, npcs: ctxNpcs, playerWanted };
+      systemBodies.npcs = ctxNpcs.map(n => stepNpc(n, stepCtx, dt));
     }
-    // Combat: laser fire (Space). Ray-cast from ship origin along
-    // current heading; if a non-exploding npc intersects within
-    // LASER_RANGE, drain its hp by LASER_DPS * dt. When hp hits 0
-    // the npc transitions to the exploding state. Always advance
-    // any in-flight explosions, regardless of fire input.
+    // Combat. Ray-cast from ship origin along current heading. On
+    // hit:
+    //   * If the target is a non-pirate AND the local government
+    //     isn't anarchy, mark the player wanted for WANTED_DURATION.
+    //   * If the hit drops the target's hp to 0 (transition into
+    //     exploding state), credit a kill. Combat rank derives from
+    //     the running total.
+    // Always advance in-flight explosions, regardless of fire input.
     if(systemBodies && systemBodies.npcs){
       if(anyHeld('fire')){
         const forward = qRotate(game.ship.orientation, V_FORWARD);
         const tgt = laserTarget(game.ship.position, forward, systemBodies.npcs);
         if(tgt){
+          const before = systemBodies.npcs[tgt.index];
+          // Crime check: was this a civilian / police shot in
+          // protected space? Mark wanted on damage, not just on
+          // kill — opening fire is the offence.
+          if(before.role !== 'pirate'){
+            const sys = findSystemBySeed(game.galaxies, game.currentSystemSeed);
+            if(sys && sys.government !== 'anarchy'){
+              game = { ...game, wantedT: WANTED_DURATION };
+            }
+          }
           systemBodies.npcs = applyLaserDamage(systemBodies.npcs, tgt.index, LASER_DPS, dt);
+          const after = systemBodies.npcs[tgt.index];
+          // Kill credit: target just transitioned from alive to exploding.
+          if(before.hp > 0 && after.hp <= 0){
+            game = { ...game, kills: (game.kills ?? 0) + 1 };
+          }
         }
       }
       systemBodies.npcs = advanceExplosions(systemBodies.npcs, dt);
 
-      // Incoming fire — every pirate that has line on the player
-      // contributes NPC_PIRATE_DPS while we're inside their cone.
-      // Hitting 0 hp triggers the destroyed reducer (resets ship
-      // pose + fuel, halves cargo, full hp).
-      const newHp = applyPirateFire(game.shipHp ?? PLAYER_MAX_HP, systemBodies.npcs, game.ship.position, dt);
+      // Incoming hostile fire. Pirates always shoot when on target;
+      // police shoot when on target AND the player is wanted. Hitting
+      // 0 hp triggers the destroyed reducer (resets ship pose + fuel,
+      // halves cargo, full hp).
+      const playerWanted = (game.wantedT ?? 0) > 0;
+      const newHp = applyHostileFire(
+        game.shipHp ?? PLAYER_MAX_HP,
+        systemBodies.npcs,
+        game.ship.position,
+        playerWanted,
+        dt,
+      );
       if(newHp !== game.shipHp){
         game = { ...game, shipHp: newHp };
         if(newHp <= 0) dispatch({ type: 'destroyed' });

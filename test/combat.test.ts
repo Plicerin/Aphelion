@@ -9,7 +9,9 @@ import {
   applyLaserDamage,
   advanceExplosions,
   pirateIsFiring,
-  applyPirateFire,
+  npcIsFiringOnPlayer,
+  applyHostileFire,
+  rankForKills,
   LASER_RANGE,
   LASER_DPS,
   NPC_MAX_HP,
@@ -18,6 +20,8 @@ import {
   NPC_LASER_RANGE,
   NPC_PIRATE_DPS,
   PLAYER_MAX_HP,
+  COMBAT_RANK_NAMES,
+  COMBAT_RANK_THRESHOLDS,
 } from '../src/sim/combat';
 import type { NpcShip } from '../src/sim/npc';
 import type { Vec3 } from '../src/sim/vec';
@@ -167,48 +171,99 @@ describe('pirateIsFiring', () => {
   });
 });
 
-describe('applyPirateFire', () => {
+describe('npcIsFiringOnPlayer', () => {
+  const playerOrigin: Vec3 = [0, 0, 0];
+
+  it('a pirate fires whenever in range + on target, regardless of wanted', () => {
+    const p = npc([0, 0, 20], { yaw: Math.PI });
+    expect(npcIsFiringOnPlayer(p, playerOrigin, false)).toBe(true);
+    expect(npcIsFiringOnPlayer(p, playerOrigin, true)).toBe(true);
+  });
+
+  it('police only fire when the player is wanted', () => {
+    const cop = npc([0, 0, 20], { role: 'police', yaw: Math.PI });
+    expect(npcIsFiringOnPlayer(cop, playerOrigin, false)).toBe(false);
+    expect(npcIsFiringOnPlayer(cop, playerOrigin, true)).toBe(true);
+  });
+
+  it('traders never fire even when wanted', () => {
+    const t = npc([0, 0, 20], { role: 'trader', yaw: Math.PI });
+    expect(npcIsFiringOnPlayer(t, playerOrigin, true)).toBe(false);
+  });
+});
+
+describe('applyHostileFire', () => {
   const playerOrigin: Vec3 = [0, 0, 0];
   const dt = 0.1;
 
-  it('returns hp unchanged when no pirates are firing', () => {
+  it('returns hp unchanged when nothing is firing', () => {
     const trader = npc([0, 0, 20], { role: 'trader', yaw: Math.PI });
-    const newHp = applyPirateFire(PLAYER_MAX_HP, [trader], playerOrigin, dt);
+    const newHp = applyHostileFire(PLAYER_MAX_HP, [trader], playerOrigin, true, dt);
     expect(newHp).toBe(PLAYER_MAX_HP);
   });
 
   it('drains hp by NPC_PIRATE_DPS * dt for one firing pirate', () => {
     const onTarget = npc([0, 0, 20], { yaw: Math.PI });
-    const newHp = applyPirateFire(PLAYER_MAX_HP, [onTarget], playerOrigin, dt);
+    const newHp = applyHostileFire(PLAYER_MAX_HP, [onTarget], playerOrigin, false, dt);
     expect(newHp).toBeCloseTo(PLAYER_MAX_HP - NPC_PIRATE_DPS * dt, 5);
   });
 
-  it('stacks damage when multiple pirates are on target', () => {
+  it('stacks damage across multiple firing shooters', () => {
     const a = npc([0, 0, 20], { yaw: Math.PI });
     const b = npc([1, 0, 20], { yaw: Math.PI });
-    const newHp = applyPirateFire(PLAYER_MAX_HP, [a, b], playerOrigin, dt);
+    const newHp = applyHostileFire(PLAYER_MAX_HP, [a, b], playerOrigin, false, dt);
     expect(newHp).toBeCloseTo(PLAYER_MAX_HP - 2 * NPC_PIRATE_DPS * dt, 5);
+  });
+
+  it('police contribute DPS only when the player is wanted', () => {
+    const cop = npc([0, 0, 20], { role: 'police', yaw: Math.PI });
+    const peace = applyHostileFire(PLAYER_MAX_HP, [cop], playerOrigin, false, dt);
+    const wanted = applyHostileFire(PLAYER_MAX_HP, [cop], playerOrigin, true, dt);
+    expect(peace).toBe(PLAYER_MAX_HP);
+    expect(wanted).toBeCloseTo(PLAYER_MAX_HP - NPC_PIRATE_DPS * dt, 5);
   });
 
   it('clamps player hp at zero — does not go negative', () => {
     const onTarget = npc([0, 0, 20], { yaw: Math.PI });
-    const newHp = applyPirateFire(1, [onTarget], playerOrigin, 1.0);
+    const newHp = applyHostileFire(1, [onTarget], playerOrigin, false, 1.0);
     expect(newHp).toBe(0);
   });
 
   it('returns 0 unchanged when player is already at 0 hp', () => {
     const onTarget = npc([0, 0, 20], { yaw: Math.PI });
-    const newHp = applyPirateFire(0, [onTarget], playerOrigin, dt);
+    const newHp = applyHostileFire(0, [onTarget], playerOrigin, false, dt);
     expect(newHp).toBe(0);
   });
+});
 
-  it('ignores pirates that are not firing (out of range, wrong way, dying)', () => {
-    const far     = npc([0, 0, NPC_LASER_RANGE + 5], { yaw: Math.PI });
-    const wrong   = npc([0, 0, 20],                  { yaw: 0 });
-    const dying   = npc([0, 0, 20],                  { yaw: Math.PI, explodingT: 0.3 });
-    const onTarget = npc([0, 0, 25],                 { yaw: Math.PI });
-    const newHp = applyPirateFire(PLAYER_MAX_HP, [far, wrong, dying, onTarget], playerOrigin, dt);
-    expect(newHp).toBeCloseTo(PLAYER_MAX_HP - NPC_PIRATE_DPS * dt, 5);
+describe('rankForKills', () => {
+  it('rank 0 (Harmless) for zero kills', () => {
+    expect(rankForKills(0)).toBe(0);
+    expect(COMBAT_RANK_NAMES[rankForKills(0)]).toBe('Harmless');
+  });
+
+  it('clamps negatives and non-finite to rank 0', () => {
+    expect(rankForKills(-5)).toBe(0);
+    expect(rankForKills(NaN)).toBe(0);
+    expect(rankForKills(-Infinity)).toBe(0);
+  });
+
+  it('top rank (Elite) at the highest threshold', () => {
+    const last = COMBAT_RANK_THRESHOLDS.length - 1;
+    expect(rankForKills(COMBAT_RANK_THRESHOLDS[last])).toBe(last);
+    expect(rankForKills(COMBAT_RANK_THRESHOLDS[last] + 1000)).toBe(last);
+  });
+
+  it('every threshold lands the player on the matching rank', () => {
+    for (let i = 0; i < COMBAT_RANK_THRESHOLDS.length; i++) {
+      expect(rankForKills(COMBAT_RANK_THRESHOLDS[i])).toBe(i);
+    }
+  });
+
+  it('one kill below a threshold stays on the previous rank', () => {
+    for (let i = 1; i < COMBAT_RANK_THRESHOLDS.length; i++) {
+      expect(rankForKills(COMBAT_RANK_THRESHOLDS[i] - 1)).toBe(i - 1);
+    }
   });
 });
 

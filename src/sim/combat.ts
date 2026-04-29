@@ -52,6 +52,43 @@ export const NPC_LASER_RANGE = 60;
  *  juke off the line. */
 export const NPC_FIRING_CONE_DOT = 0.92;
 
+/** Seconds the player stays wanted after firing on a civilian (non-
+ *  pirate) inside a non-anarchy system. Decays in real time; while
+ *  it's positive, police in the system pursue + fire. */
+export const WANTED_DURATION = 30;
+
+/**
+ * Combat rank thresholds — Elite-tradition ladder. Index N is the
+ * minimum kill count to earn rank N. The save format persists `kills`
+ * (a counter); rank is derived on demand via rankForKills.
+ */
+export const COMBAT_RANK_THRESHOLDS: readonly number[] = [
+  0, 1, 8, 16, 32, 64, 128, 256, 512,
+];
+export const COMBAT_RANK_NAMES: readonly string[] = [
+  'Harmless',
+  'Mostly Harmless',
+  'Poor',
+  'Average',
+  'Above Average',
+  'Competent',
+  'Dangerous',
+  'Deadly',
+  'Elite',
+];
+
+/**
+ * Map a kill count to a rank index 0..(COMBAT_RANK_NAMES.length - 1).
+ * Negative or non-finite inputs clamp to 0.
+ */
+export function rankForKills(kills: number): number {
+  if (!Number.isFinite(kills) || kills < 0) return 0;
+  for (let i = COMBAT_RANK_THRESHOLDS.length - 1; i >= 0; i--) {
+    if (kills >= COMBAT_RANK_THRESHOLDS[i]) return i;
+  }
+  return 0;
+}
+
 /** Result of a successful laser ray test. */
 export interface LaserTarget {
   /** Index of the hit ship in the npc list passed to laserTarget. */
@@ -131,24 +168,13 @@ export function advanceExplosions(
   return out;
 }
 
-/**
- * Decide whether a single pirate is firing this frame.
- *
- * Conditions: pirate must be alive, within NPC_LASER_RANGE of the
- * player, and pointing at the player within the firing cone (dot
- * product of forward heading and player direction > cone-cosine).
- *
- * Pure read — no state changes. The renderer uses this to draw
- * incoming-fire indicators at the same time damage is applied.
- */
-export function pirateIsFiring(npc: NpcShip, playerPos: Vec3): boolean {
-  if (npc.role !== 'pirate') return false;
-  if (npc.explodingT > 0 || npc.hp <= 0) return false;
+/** Range + cone test only — no role/health gating. The role-aware
+ *  helpers below add the per-role rules on top. */
+function isOnTarget(npc: NpcShip, playerPos: Vec3): boolean {
   const dx = playerPos[0] - npc.position[0];
   const dz = playerPos[2] - npc.position[2];
   const dist = Math.hypot(dx, dz);
   if (dist > NPC_LASER_RANGE || dist < 0.001) return false;
-  // Pirate forward heading (2D — npc movement is yaw-only).
   const fx = Math.sin(npc.yaw);
   const fz = Math.cos(npc.yaw);
   const tox = dx / dist;
@@ -156,18 +182,47 @@ export function pirateIsFiring(npc: NpcShip, playerPos: Vec3): boolean {
   return fx * tox + fz * toz > NPC_FIRING_CONE_DOT;
 }
 
+/** Pirate-only firing predicate. Kept for tests and existing
+ *  renderer hooks; npcIsFiringOnPlayer is the more general one. */
+export function pirateIsFiring(npc: NpcShip, playerPos: Vec3): boolean {
+  if (npc.role !== 'pirate') return false;
+  if (npc.explodingT > 0 || npc.hp <= 0) return false;
+  return isOnTarget(npc, playerPos);
+}
+
 /**
- * Apply incoming pirate fire to the player. Returns the new player
- * hp after every firing pirate's DPS contribution has drained for
- * dt seconds. Multiple pirates stack additively.
+ * Decide whether ANY npc is firing on the player this frame.
+ *
+ * Pirates fire any time they're alive, in range, and on target.
+ * Police fire only when the player is currently wanted. Other roles
+ * never fire.
  */
-export function applyPirateFire(
-  playerHp: number, npcs: readonly NpcShip[], playerPos: Vec3, dt: number,
+export function npcIsFiringOnPlayer(
+  npc: NpcShip, playerPos: Vec3, playerWanted: boolean,
+): boolean {
+  if (npc.explodingT > 0 || npc.hp <= 0) return false;
+  if (npc.role === 'pirate') return isOnTarget(npc, playerPos);
+  if (npc.role === 'police' && playerWanted) return isOnTarget(npc, playerPos);
+  return false;
+}
+
+/**
+ * Apply incoming hostile fire (pirates always; police when the
+ * player is wanted) to the player. Returns the new player hp after
+ * every firing npc's DPS has drained for dt seconds. Multiple
+ * shooters stack additively.
+ */
+export function applyHostileFire(
+  playerHp: number,
+  npcs: readonly NpcShip[],
+  playerPos: Vec3,
+  playerWanted: boolean,
+  dt: number,
 ): number {
   if (playerHp <= 0) return 0;
   let totalDps = 0;
   for (const npc of npcs) {
-    if (pirateIsFiring(npc, playerPos)) totalDps += NPC_PIRATE_DPS;
+    if (npcIsFiringOnPlayer(npc, playerPos, playerWanted)) totalDps += NPC_PIRATE_DPS;
   }
   if (totalDps === 0) return playerHp;
   return Math.max(0, playerHp - totalDps * dt);

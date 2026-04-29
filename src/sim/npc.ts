@@ -121,25 +121,32 @@ const TRADER_FLEE_RADIUS  = 30;      // start fleeing when a pirate is this clos
 /**
  * Per-frame context for stepNpc.
  *
- *   playerPos — current player ship position; pirates target it.
- *   npcs      — full list of NPCs in the system at the START of this
- *               frame. Traders read pirate positions from it. Self
- *               filtering is done inside stepNpc.
+ *   playerPos    — current player ship position; pirates target it.
+ *   npcs         — full list of NPCs in the system at the START of this
+ *                  frame. Traders read pirate positions from it. Self
+ *                  filtering is done inside stepNpc.
+ *   playerWanted — whether the player has triggered the local
+ *                  authorities. When true, police pursue and fire
+ *                  using the same code path as pirates; when false
+ *                  they stay parked.
  */
 export interface NpcStepCtx {
   readonly playerPos: Vec3;
   readonly npcs: readonly NpcShip[];
+  readonly playerWanted: boolean;
 }
 
 /**
  * One frame of NPC behaviour. Pure: takes the npc + context + dt,
- * returns a new npc. Exploding npcs and police return unchanged in
- * this slice.
+ * returns a new npc. Exploding npcs are unchanged; police are
+ * unchanged unless the player is wanted, in which case they pursue
+ * via the pirate code path.
  */
 export function stepNpc(npc: NpcShip, ctx: NpcStepCtx, dt: number): NpcShip {
   if (npc.explodingT > 0) return npc;
   if (npc.role === 'pirate') return stepPirate(npc, ctx.playerPos, dt);
   if (npc.role === 'trader') return stepTrader(npc, ctx.npcs, dt);
+  if (npc.role === 'police' && ctx.playerWanted) return stepPirate(npc, ctx.playerPos, dt);
   return npc;
 }
 

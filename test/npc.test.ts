@@ -132,8 +132,8 @@ describe('stepNpc — pirate pursuit', () => {
     return { shipId: 'wraith', role: 'police', position, yaw, hp: 100, explodingT: 0 };
   }
 
-  function ctx(npcs: NpcShip[], playerPos: Vec3 = playerOrigin): NpcStepCtx {
-    return { playerPos, npcs };
+  function ctx(npcs: NpcShip[], playerPos: Vec3 = playerOrigin, playerWanted = false): NpcStepCtx {
+    return { playerPos, npcs, playerWanted };
   }
 
   it('police role is unchanged by stepNpc', () => {
@@ -186,6 +186,22 @@ describe('stepNpc — pirate pursuit', () => {
     const next = stepNpc(dying, ctx([dying]), dt);
     expect(next).toBe(dying);
   });
+
+  it('police are unchanged when the player is NOT wanted', () => {
+    const cop = police([0, 0, 50], 0);
+    expect(stepNpc(cop, ctx([cop], playerOrigin, false), dt)).toBe(cop);
+  });
+
+  it('police pursue the player when wanted (same code path as pirate)', () => {
+    // Start the cop already pointing at the player so the test
+    // measures pursuit (closing the distance), not the turn budget.
+    let cop = police([0, 0, 50], Math.PI);
+    const z0 = cop.position[2];
+    for (let i = 0; i < 30; i++) {
+      cop = stepNpc(cop, ctx([cop], playerOrigin, true), dt);
+    }
+    expect(cop.position[2]).toBeLessThan(z0);
+  });
 });
 
 describe('stepNpc — trader flee', () => {
@@ -199,7 +215,7 @@ describe('stepNpc — trader flee', () => {
     return { shipId: 'wraith', role: 'trader', position, yaw, hp: 100, explodingT: 0 };
   }
   function ctx(npcs: NpcShip[]): NpcStepCtx {
-    return { playerPos: playerOrigin, npcs };
+    return { playerPos: playerOrigin, npcs, playerWanted: false };
   }
 
   it('trader is unchanged when the only nearby pirate is beyond flee radius', () => {
