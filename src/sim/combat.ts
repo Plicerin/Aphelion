@@ -39,18 +39,18 @@ export const EXPLOSION_DURATION = 1.0;
 /** Player ship hull HP. Same scale as NPC_MAX_HP. */
 export const PLAYER_MAX_HP = 100;
 
-/** Pirate laser DPS — half the player's, so 1v1 is winnable but not
- *  trivial. Multiple pirates stacking fire makes group fights tense. */
-export const NPC_PIRATE_DPS = 40;
+/** Pirate laser DPS — meaningfully under the player's so 1v1 is
+ *  winnable; multiple pirates stacking fire still makes group
+ *  fights tense. */
+export const NPC_PIRATE_DPS = 22;
 
 /** Maximum range at which a pirate will open fire on the player. */
-export const NPC_LASER_RANGE = 60;
+export const NPC_LASER_RANGE = 50;
 
 /** Cosine of the half-angle of the cone within which a pirate
- *  considers itself "on target". 0.92 ≈ ~23° half-angle — generous
- *  enough that turning pirates can hit, tight enough that you can
- *  juke off the line. */
-export const NPC_FIRING_CONE_DOT = 0.92;
+ *  considers itself "on target". 0.95 ≈ ~18° half-angle — tight
+ *  enough that a player who jukes can break the line. */
+export const NPC_FIRING_CONE_DOT = 0.95;
 
 /** Seconds the player stays wanted after firing on a civilian (non-
  *  pirate) inside a non-anarchy system. Decays in real time; while

@@ -106,15 +106,14 @@ export function spawnNpcs(system: System): readonly NpcShip[] {
   return npcs;
 }
 
-/* Behaviour tunables. Pirates are slightly slower than the player so
- * they're catchable; traders out-cruise pirates in a straight line
- * but turn slower, giving pirates a chance to corner them by cutting
- * angles. Both are 2D — pitch stays at 0 until weapons land. */
-const PIRATE_SPEED        = 8;
-const PIRATE_TURN_RATE    = 0.6;
-const PIRATE_STAND_OFF    = 8;
+/* Behaviour tunables. Pirates are deliberately slow + tentative so
+ * a player who throttles up and turns can break contact. Multiple-
+ * pirate fights are still dangerous because their fire stacks. */
+const PIRATE_SPEED        = 5;
+const PIRATE_TURN_RATE    = 0.45;
+const PIRATE_STAND_OFF    = 14;
 
-const TRADER_SPEED        = 9;       // a touch faster than pirates in a chase
+const TRADER_SPEED        = 7;       // out-cruises pirates in a straight line
 const TRADER_TURN_RATE    = 0.4;     // but slower to change heading
 const TRADER_FLEE_RADIUS  = 30;      // start fleeing when a pirate is this close
 

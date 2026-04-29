@@ -1902,13 +1902,13 @@ function spawnNpcs(sys){
 }
 
 /* NPC behaviour tunables — mirror of src/sim/npc.ts. Pirates are
- * slightly slower than the player so they're catchable; traders
- * out-cruise pirates in a straight line but turn slower. 2D model:
- * pitch stays at 0 until weapons land. */
-const NPC_PIRATE_SPEED        = 8;
-const NPC_PIRATE_TURN_RATE    = 0.6;
-const NPC_PIRATE_STAND_OFF    = 8;
-const NPC_TRADER_SPEED        = 9;
+ * deliberately slow + tentative so a player who throttles up and
+ * turns can break contact. Multiple-pirate fights are still
+ * dangerous because their fire stacks. */
+const NPC_PIRATE_SPEED        = 5;
+const NPC_PIRATE_TURN_RATE    = 0.45;
+const NPC_PIRATE_STAND_OFF    = 14;
+const NPC_TRADER_SPEED        = 7;
 const NPC_TRADER_TURN_RATE    = 0.4;
 const NPC_TRADER_FLEE_RADIUS  = 30;
 
@@ -1983,9 +1983,9 @@ const NPC_MAX_HP           = 100;
 const NPC_HIT_RADIUS       = 2.5;
 const EXPLOSION_DURATION   = 1.0;
 const PLAYER_MAX_HP        = 100;
-const NPC_PIRATE_DPS       = 40;
-const NPC_LASER_RANGE      = 60;
-const NPC_FIRING_CONE_DOT  = 0.92;
+const NPC_PIRATE_DPS       = 22;
+const NPC_LASER_RANGE      = 50;
+const NPC_FIRING_CONE_DOT  = 0.95;
 const WANTED_DURATION      = 30;
 const COMBAT_RANK_THRESHOLDS = [0, 1, 8, 16, 32, 64, 128, 256, 512];
 const COMBAT_RANK_NAMES = [
@@ -2192,12 +2192,13 @@ function reduce(state, action){
         const v = state.cargo[k];
         if(typeof v === 'number' && v > 0) halvedCargo[k] = Math.floor(v / 2);
       }
-      // Safe respawn point: 100u behind origin, facing +Z. NPC spawn
-      // range is z=25..90, so even the closest npc is ~125u away,
-      // well beyond NPC_LASER_RANGE=60. Pirates have to traverse 65u
-      // at speed 8 (~8 seconds) before they can fire — combined with
-      // the invuln window the player gets a clean restart.
-      const safeShip = { ...INITIAL_SHIP, position: [0, 0, -100] };
+      // Safe respawn point: 200u behind origin, facing +Z. NPC spawn
+      // range is z=25..90, so the closest npc is ~225u away, well
+      // beyond NPC_LASER_RANGE=50. At pirate speed 5 they need ~35
+      // seconds to close that gap — combined with an 8-second
+      // invuln window the player gets a clean restart in even the
+      // worst spawn arrangement.
+      const safeShip = { ...INITIAL_SHIP, position: [0, 0, -200] };
       return {
         ...state,
         screen: 'flight',
@@ -2207,7 +2208,7 @@ function reduce(state, action){
         ship:   safeShip,
         dockingT: 0,
         respawnGen: (state.respawnGen ?? 0) + 1,
-        respawnInvulnT: 5.0,
+        respawnInvulnT: 8.0,
         wantedT: 0,
       };
     }
@@ -2593,10 +2594,13 @@ const glyphAtlas = {
   //                  profile). Pre-multiplied final tile, ready to
   //                  drawImage in one call. LRU-capped so memory
   //                  stays bounded; insertion-ordered Map handles
-  //                  the eviction loop.
+  //                  the eviction loop. Cap is generous because a
+  //                  single planet view can hit ~750 tiles when
+  //                  biome glyphs and lightness buckets multiply
+  //                  out — too small a cap means thrashing.
   neutralCache: new Map(),
   tintedCache: new Map(),
-  TINTED_LIMIT: 384,
+  TINTED_LIMIT: 1536,
 
   scratchCanvas: null,
   scratchCtx: null,
@@ -2740,7 +2744,13 @@ function renderLayers(layers, cell, cols, rows, W, H){
       const hueDelta = bestL.hueShifts ? bestL.hueShifts[idx] : 0;
       const hueQ = (c.h + hueDelta) | 0;
       const satQ = c.s | 0;
-      const light = Math.max(20, Math.min(95, c.l - 15 + bestV * 40));
+      // Multiply darkens dest by the tint colour; bake's white core
+      // becomes the tint colour exactly. With low-lightness theme
+      // hues (e.g. planet at 35%) the result is too dim to see.
+      // Floor at 55% so the multiplied core stays visible regardless
+      // of the source theme — character cells still vary in
+      // brightness via bestV, just within a usable range.
+      const light = Math.max(55, Math.min(95, c.l - 5 + bestV * 35));
       // 5-step lightness bucketing keeps the tinted cache compact
       // while preserving the brightness ramp visually.
       const lightBucket = Math.round(light / 5) * 5;
