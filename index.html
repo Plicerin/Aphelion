@@ -2035,11 +2035,45 @@ resize();
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = `Open ${name} →`;
-      btn.title = `Opens the ${name}-profile bake tile in a new tab as a raw PNG`;
-      btn.addEventListener('click', () => window.open(url, '_blank', 'noopener'));
+      btn.title = `Opens the ${name}-profile bake tile in a new tab`;
+      btn.addEventListener('click', () => openBakeInNewTab(name, url));
       cell.appendChild(preview); cell.appendChild(btn);
       host.appendChild(cell);
     }
+  }
+
+  // Open the bake tile in a new tab. Modern browsers (Firefox, recent
+  // Chrome) block direct window.open() to a data: URL — the tab opens
+  // but the navigation is silently blocked, leaving a blank page.
+  // Workaround: open a blank window first, then document.write HTML
+  // into it that embeds the data URL via an <img> tag. The HTML
+  // navigation is allowed; the data URL inside an <img src> is fine.
+  function openBakeInNewTab(name, dataUrl){
+    const w = window.open('', '_blank');
+    if(!w){
+      console.warn('[Aphelion bloom-diag] window.open returned null (popup blocked?). Bake URL length:', dataUrl.length);
+      // Fallback: navigate the current tab? Bad UX. Instead, log the
+      // data URL so the user can paste it into a new tab manually.
+      console.log('[Aphelion bloom-diag] Bake tile data URL for "%s":', name, dataUrl);
+      alert(`Popup blocked. The bake tile data URL is in the console — paste it into a new tab to view.`);
+      return;
+    }
+    w.document.write(
+      '<!doctype html><html><head><meta charset="utf-8"><title>Bake test: ' + name + '</title>' +
+      // Pure black backgrounds throughout so the halo's faint outer
+      // pixels show against true 0,0,0 — anything brighter than that
+      // would mask the dim Gaussian tail we're trying to inspect.
+      '<style>html,body{margin:0;background:#000;color:#7cf7ff;font-family:ui-monospace,monospace;}' +
+      'body{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:14px;}' +
+      'h1{font-size:14px;letter-spacing:0.2em;text-transform:uppercase;color:#9ca5b3;font-weight:400;}' +
+      'img{image-rendering:pixelated;background:#000;}' +
+      'p{font-size:11px;color:#9ca5b3;max-width:520px;text-align:center;line-height:1.5;}</style></head>' +
+      '<body><h1>' + name + ' profile bake</h1>' +
+      '<img src="' + dataUrl + '" width="400" height="400" alt="bake tile">' +
+      '<p>Fat halo extending into corners = bake is correct. Tight halo or no halo = shadowBlur isn\'t spreading.</p>' +
+      '</body></html>'
+    );
+    w.document.close();
   }
 
   // Bake one tile using the same stacked-shadowBlur recipe the atlas
