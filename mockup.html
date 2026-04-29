@@ -510,8 +510,11 @@
     const lPlanet    = makeLayer('planet',    'world', 'planet',    wCell, W, H, 1.6);
     const lPlanetAcc = makeLayer('planetAcc', 'world', 'planetAcc', wCell, W, H, 1.6);
     const lDust      = makeLayer('dust',      'world', 'dust',      wCell, W, H);
-    const lHull      = makeLayer('hull',      'world', 'hull',      wCell, W, H);
-    const lHullAcc   = makeLayer('hullAcc',   'world', 'hullAcc',   wCell, W, H);
+    // Hull renders at instrument-scale cells in both modes — wireframes
+    // need fine cells to read; the chunky proposed-mode wCell makes the
+    // Cobra blocky and unrecognisable.
+    const lHull      = makeLayer('hull',      'world', 'hull',      iCell, W, H);
+    const lHullAcc   = makeLayer('hullAcc',   'world', 'hullAcc',   iCell, W, H);
     const lFrame     = makeLayer('frame',     'inst',  'frame',     iCell, W, H);
     const lDash      = makeLayer('dash',      'inst',  'dash',      iCell, W, H);
     const lStatus    = makeLayer('status',    'inst',  'status',    iCell, W, H);
@@ -698,27 +701,12 @@
         const x1 = a[0]/lHull.cell, y1 = a[1]/lHull.cell, x2 = b[0]/lHull.cell, y2 = b[1]/lHull.cell;
         const avgZ = (a[2] + b[2]) * 0.5;
         const close = Math.max(0.4, Math.min(1, 2 / avgZ));
-        // Glyph picker: per-cell variety from the hull palette.
-        const ch = (gx, gy, ddx, ddy) => {
-          // 12% chance of a "panel label" letter, otherwise a bracket-style
-          // glyph picked by slope kind + position hash.
-          const r = pHash(gx, gy, ei + 41);
-          if (r < 0.12) return pPick(gx, gy, ei + 53, G.hullLabels);
-          // Slope-aware pick from hull set
-          const am = Math.abs(Math.atan2(ddy, ddx));
-          if (am < Math.PI/8 || am > 7*Math.PI/8) {
-            return pPick(gx, gy, ei + 71, ['─','=','=','=','-','*','+']);
-          }
-          if (am > 3*Math.PI/8 && am < 5*Math.PI/8) {
-            return pPick(gx, gy, ei + 73, ['│','|','#','*','+']);
-          }
-          if ((ddy >= 0) === (ddx >= 0)) return pPick(gx, gy, ei + 79, ['\\','*','%','#']);
-          return pPick(gx, gy, ei + 83, ['/','*','%','#']);
-        };
-        // Occasional accent edge (every ~7th edge) goes to the accent layer
-        // for a second-color highlight, like Effulgence ships' detail color.
+        // No per-cell glyph picker — let the brightness ramp pick (gives
+        // the clean uniform-bright wireframe look). The bracket-and-equals
+        // hull palette read as noise on a thin wireframe; clean line glyphs
+        // serve the geometry better.
         const layer = (ei % 7 === 3) ? lHullAcc : lHull;
-        plotLine(layer, x1, y1, x2, y2, close * 0.85, ch);
+        plotLine(layer, x1, y1, x2, y2, close * 0.85, null);
       }
     }
 
@@ -1150,8 +1138,12 @@
       ctx.restore();
     }
 
-    // World group renders first (back to front: bg, planet, planetAcc, dust, hull, hullAcc).
-    renderGroup([lBg, lPlanet, lPlanetAcc, lDust, lHull, lHullAcc], wCell);
+    // World background group at chunky cells (back to front: bg, planet, planetAcc, dust).
+    renderGroup([lBg, lPlanet, lPlanetAcc, lDust], wCell);
+    // Hull group at fine cells — wireframes need the precision. Still part
+    // of the "world" pass so it renders before the cockpit mask, i.e. the
+    // ship is visible only through the canopy, not on the dashboard.
+    renderGroup([lHull, lHullAcc], iCell);
     // Mask the cockpit body so instruments don't fight the world for legibility.
     if (state.style === 'proposed') drawCockpitMask();
     // Instrument group renders on top of the mask. Status disk has its
