@@ -1414,6 +1414,42 @@ function updateDockingT(currentT, shipPos, shipSpeed, anchorPos, dt, dockRadius)
   return Math.max(0, currentT - dt / (DOCK_TIME_REQUIRED * 2));
 }
 
+/* ===== 5e. NPC ships (per-system, deterministic) =====
+   Phase 1: one Wraith per system. Geometry mirrors src/sim/blueprints.ts;
+   spawn logic mirrors src/sim/npc.ts. AI / multi-NPC / role-weighting
+   land in v0.2 follow-ups. */
+const WRAITH_BLUEPRINT = {
+  id: 'wraith',
+  name: 'Wraith',
+  defaultScale: 0.0035,
+  vertices: [
+    [   0,   0,  64], [ -56,   0,  -8], [  56,   0,  -8],
+    [ -20,   8, -32], [  20,   8, -32], [ -20,  -8, -32], [  20,  -8, -32],
+    [ -16,   0, -40], [  16,   0, -40],
+    [   0,  10,   8], [ -32,   2, -16], [  32,   2, -16],
+  ],
+  edges: [
+    [ 0, 1,  0,  4], [ 0, 2,  1,  3], [ 0, 9,  0,  1], [ 9, 3,  0,  2],
+    [ 9, 4,  1,  2], [ 1, 3,  4,  2], [ 2, 4,  3,  2], [ 3, 4,  2, -1],
+    [ 1, 5,  4,  5], [ 2, 6,  3,  6], [ 5, 6,  5,  6], [ 5, 7,  5,  7],
+    [ 6, 8,  6,  7], [ 7, 8,  7, -1], [10, 1,  4, -1], [10, 5,  5, -1],
+    [11, 2,  3, -1], [11, 6,  6, -1],
+  ],
+  faces: [
+    [ -20,  20,  20], [  20,  20,  20], [   0,  20, -10],
+    [  20, -20,  20], [ -20, -20,  20],
+    [ -20, -20, -10], [  20, -20, -10], [   0,   0, -40],
+  ],
+};
+function spawnNpcs(sys){
+  const seed = sys.seed;
+  const ox = (((seed[0] >> 4) & 0xff) - 128) * 0.40;
+  const oy = (((seed[1] >> 4) & 0xff) - 128) * 0.15;
+  const oz = 25 + ((seed[2] >> 0) & 0x3f);
+  const yaw = ((seed[0] & 0xff) / 256) * Math.PI * 2;
+  return [{ shipId: 'wraith', position: [ox, oy, oz], yaw }];
+}
+
 /* ===== 5b. Trade anchor =====
    Each system has one trade anchor, a fixed point in flight world-space
    near the planet that resolves into a readable trade interface as the
@@ -2066,6 +2102,7 @@ function buildSystemBodies(sys){
 
   const planetPos = [planetSide * 25, planetUp * 10, planetDist];
   const anchor = placeAnchor(planetPos, sys.seed);
+  const npcs = spawnNpcs(sys);
 
   return {
     sun: { pos: [sunOffset * 30, 25, sunDist] },
@@ -2079,6 +2116,7 @@ function buildSystemBodies(sys){
       surface,
     },
     anchor,
+    npcs,
   };
 }
 
@@ -2273,6 +2311,10 @@ function renderFlight(state, theme, dt){
   const lPlanetAcc = makeFlightLayer('planetAcc', resolveColor(theme.hues.dash),     wCell, wCols, wRows, 1.4);
   const lDust      = makeFlightLayer('dust',      resolveColor(theme.hues.dust),     wCell, wCols, wRows);
   const lAnchor    = makeFlightLayer('anchor',    resolveColor(theme.hues.selected), wCell, wCols, wRows);
+  // NPC hull renders at fine cells (instrument scale) but is part of the
+  // world pass — it draws BEFORE the cockpit mask so ships are visible
+  // only through the canopy.
+  const lHull      = makeFlightLayer('hull',      resolveColor(theme.hues.hull),     iCell, iCols, iRows);
   const lFrame     = makeFlightLayer('frame',     resolveColor(theme.hues.frame),    iCell, iCols, iRows);
   const lDash      = makeFlightLayer('dash',      resolveColor(theme.hues.dash),     iCell, iCols, iRows);
   const lStatus    = makeFlightLayer('status',    resolveColor(theme.hues.status || theme.hues.frame), iCell, iCols, iRows);
@@ -2485,6 +2527,97 @@ function renderFlight(state, theme, dt){
       if(typeof chSpec === 'function') ch = chSpec(gx, gy, dxL, dyL);
       else if(typeof chSpec === 'string') ch = chSpec;
       instSet(layer, gx, gy, brightness, ch);
+    }
+  }
+
+  /* ---- WORLD: NPC ships ----
+     Phase 1: each system has one Wraith parked at a deterministic
+     offset. Vertices transformed by the NPC's yaw, then offset by
+     world position, then projected through the camera. Edges drawn
+     with face-visibility culling. lHull renders at iCell scale and
+     in the world pass (before the cockpit mask). Brightness-ramp
+     glyphs (no per-cell palette) keep the wireframe clean. */
+  let _activeTarget = null;     // populated below for the TARGET disk
+  if(systemBodies && systemBodies.npcs){
+    for(const npc of systemBodies.npcs){
+      const cosY = Math.cos(npc.yaw), sinY = Math.sin(npc.yaw);
+      // Transform every vertex once; cache projected points.
+      const tv = WRAITH_BLUEPRINT.vertices.map(v => {
+        const sx = v[0] * WRAITH_BLUEPRINT.defaultScale;
+        const sy = v[1] * WRAITH_BLUEPRINT.defaultScale;
+        const sz = v[2] * WRAITH_BLUEPRINT.defaultScale;
+        // Rotate around world-up (yaw), then translate to world position
+        // relative to the player ship.
+        const rx = cosY * sx + sinY * sz;
+        const rz = -sinY * sx + cosY * sz;
+        return [
+          rx + npc.position[0] - state.ship.position[0],
+          sy + npc.position[1] - state.ship.position[1],
+          rz + npc.position[2] - state.ship.position[2],
+        ];
+      });
+      // Camera-space (apply player ship orientation inverse).
+      const cv = tv.map(p => qRotate(invOrient, p));
+      const pv = cv.map(p => {
+        if(p[2] < 0.5) return null;
+        return [
+          (p[0]*FOV_FLIGHT)/p[2] + W/2,
+          (-p[1]*FOV_FLIGHT)/p[2] + H/2,
+          p[2],
+        ];
+      });
+      // Face visibility culling: rotate face normal the same way and
+      // check if it points toward the camera.
+      const faceVis = WRAITH_BLUEPRINT.faces.map(f => {
+        const fx = cosY * f[0] + sinY * f[2];
+        const fz = -sinY * f[0] + cosY * f[2];
+        const cam = qRotate(invOrient, [fx, f[1], fz]);
+        return cam[2] > 0;
+      });
+      // Draw each edge.
+      for(const ed of WRAITH_BLUEPRINT.edges){
+        const v1 = ed[0], v2 = ed[1], f1 = ed[2], f2 = ed[3];
+        const visF1 = f1 < 0 || faceVis[f1];
+        const visF2 = f2 < 0 || faceVis[f2];
+        if(!visF1 && !visF2) continue;
+        const a = pv[v1], b = pv[v2];
+        if(!a || !b) continue;
+        const x1 = a[0]/iCell, y1 = a[1]/iCell, x2 = b[0]/iCell, y2 = b[1]/iCell;
+        const avgZ = (a[2] + b[2]) * 0.5;
+        // Distance fade — closer NPCs read brighter. Wraith spawn range
+        // is roughly 25..90 units in front of the player.
+        const close = Math.max(0.4, Math.min(1, 30 / avgZ));
+        instLine(lHull, x1, y1, x2, y2, close * 0.85, null);
+      }
+      // Targeting: if the ship's center is near the crosshair AND in
+      // front of the camera, mark it as the active target. Crosshair
+      // sits at (W/2, H*0.42).
+      const center = npc.position;
+      const dx = center[0] - state.ship.position[0];
+      const dy = center[1] - state.ship.position[1];
+      const dz = center[2] - state.ship.position[2];
+      const camCenter = qRotate(invOrient, [dx, dy, dz]);
+      if(camCenter[2] > 0.5){
+        const cpx = (camCenter[0]*FOV_FLIGHT)/camCenter[2] + W/2;
+        const cpy = (-camCenter[1]*FOV_FLIGHT)/camCenter[2] + H/2;
+        const dxs = cpx - W/2, dys = cpy - H*0.42;
+        const screenDist = Math.hypot(dxs, dys);
+        const range = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        // Closing speed = ship velocity projected onto the line of sight.
+        const losLen = range > 0.01 ? range : 1;
+        const losX = dx/losLen, losY = dy/losLen, losZ = dz/losLen;
+        const vDot = state.ship.velocity[0]*losX
+                   + state.ship.velocity[1]*losY
+                   + state.ship.velocity[2]*losZ;
+        if(screenDist < 60 && (!_activeTarget || range < _activeTarget.range)){
+          _activeTarget = {
+            ship: WRAITH_BLUEPRINT,
+            range,
+            closing: vDot,    // positive = approaching
+            screenX: cpx, screenY: cpy,
+          };
+        }
+      }
     }
   }
 
@@ -2740,6 +2873,11 @@ function renderFlight(state, theme, dt){
      ============================================================ */
   renderLayers([lStars, lSun, lPlanet, lPlanetAcc, lAnchor, lDust], wCell, wCols, wRows, W, H);
 
+  // NPC hulls render at fine cells (instrument scale) but BEFORE the
+  // cockpit mask so they're visible only through the canopy. Wireframes
+  // need the precision; chunky world cells make them blocky.
+  renderLayers([lHull], iCell, iCols, iRows, W, H);
+
   // Cockpit mask: fill outside-the-canopy with solid black so the
   // instruments aren't fighting bright world content for legibility.
   ctx.save();
@@ -2774,8 +2912,35 @@ function renderFlight(state, theme, dt){
   const _amber = theme.hues.dash;
   const _cool  = theme.hues.status ?? theme.hues.frame;
 
-  // Disk captions
-  glowTextHUD('NO TGT', tdcx, tdcy + diskR + 14, _amber, 9);
+  // Disk captions: when there's a locked target, replace "NO TGT" with
+  // the ship name and add live RNG / VEL readouts below.
+  if(_activeTarget){
+    glowTextHUD(_activeTarget.ship.name.toUpperCase(),
+                tdcx, tdcy + diskR + 14, _amber, 10);
+    glowTextHUD(`RNG ${_activeTarget.range.toFixed(1)} u`,
+                tdcx, tdcy + diskR + 28, _amber, 9, '400');
+    const closing = _activeTarget.closing;
+    const velLabel = closing >= 0 ? `VEL +${closing.toFixed(1)}` : `VEL ${closing.toFixed(1)}`;
+    glowTextHUD(velLabel, tdcx, tdcy + diskR + 40, _amber, 9, '400');
+    // Bracket marks around the on-screen target for visual lock.
+    ctx.save();
+    ctx.strokeStyle = `hsl(${resolveColor(_amber).h}, 95%, 70%)`;
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = ctx.strokeStyle;
+    ctx.shadowBlur = 6;
+    const r = 24;
+    const x = _activeTarget.screenX, y = _activeTarget.screenY;
+    ctx.beginPath();
+    ctx.moveTo(x-r, y-r+6); ctx.lineTo(x-r, y-r); ctx.lineTo(x-r+6, y-r);
+    ctx.moveTo(x+r-6, y-r); ctx.lineTo(x+r, y-r); ctx.lineTo(x+r, y-r+6);
+    ctx.moveTo(x-r, y+r-6); ctx.lineTo(x-r, y+r); ctx.lineTo(x-r+6, y+r);
+    ctx.moveTo(x+r-6, y+r); ctx.lineTo(x+r, y+r); ctx.lineTo(x+r, y+r-6);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  } else {
+    glowTextHUD('NO TGT', tdcx, tdcy + diskR + 14, _amber, 9);
+  }
   glowTextHUD('SYS',    sdcx, sdcy + diskR + 14, _cool,  9);
 
   // SYSTEMS bar labels (drawn next to each stacked bar inside the disk).
