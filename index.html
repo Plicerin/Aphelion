@@ -2762,6 +2762,201 @@ function renderLayers(layers, cell, cols, rows, W, H){
   ctx.globalCompositeOperation = 'source-over';
 }
 
+const NEW_PLANET_RENDERER = true;
+
+const planetGlyphRenderer = (function(){
+  const canvas = document.createElement('canvas');
+  const cx = canvas.getContext('2d', { alpha: true });
+  const glowCanvas = document.createElement('canvas');
+  const gx = glowCanvas.getContext('2d', { alpha: true });
+  const tileCache = new Map();
+  let lastRender = null;
+  const glyphs = {
+    deepWater: ['.','.',':','~','-'],
+    water: ['~','~','~','_','-','-',':','.'],
+    coast: ['~','-','_','.',':','/','\\'],
+    land: ['a','b','d','e','o','0','&','%'],
+    ridge: ['/','\\','|','!','^'],
+    ice: ['*','+','o','@'],
+    city: ['#','B','V','[',']'],
+  };
+  const colors = {
+    deepWater: { h:194, s:96, l:48 },
+    water: { h:186, s:96, l:56 },
+    coastWater: { h:178, s:98, l:62 },
+    coastLand: { h:42, s:95, l:60 },
+    land: { h:42, s:92, l:58 },
+    landHi: { h:52, s:92, l:58 },
+    ridge: { h:18, s:92, l:58 },
+    ice: { h:205, s:90, l:72 },
+    city: { h:304, s:96, l:62 },
+  };
+
+  function hash(x, y, s){
+    let h = (x|0) * 374761393 + (y|0) * 668265263 + (s|0) * 1442695041;
+    h = (h ^ (h >>> 13)) * 1274126177;
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  }
+  function smoothstep(edge0, edge1, x){
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  }
+  function tile(ch, color, cell){
+    const key = ch + '|' + color.h + '|' + color.s + '|' + color.l + '|' + cell;
+    let t = tileCache.get(key);
+    if(t) return t;
+    const pad = Math.ceil(cell * 1.5);
+    const size = cell + pad * 2;
+    t = document.createElement('canvas');
+    t.width = size;
+    t.height = size;
+    const tx = t.getContext('2d');
+    tx.font = `${cell}px ui-monospace, "JetBrains Mono", Consolas, monospace`;
+    tx.textAlign = 'center';
+    tx.textBaseline = 'middle';
+    tx.globalCompositeOperation = 'lighter';
+    tx.shadowColor = `hsl(${color.h}, ${color.s}%, ${color.l}%)`;
+    tx.shadowBlur = cell * 0.75;
+    tx.globalAlpha = 0.58;
+    tx.fillStyle = `hsl(${color.h}, ${color.s}%, ${Math.min(78, color.l + 10)}%)`;
+    tx.fillText(ch, size / 2, size / 2);
+    tx.shadowBlur = cell * 0.25;
+    tx.globalAlpha = 0.95;
+    tx.fillText(ch, size / 2, size / 2);
+    tx.shadowBlur = 0;
+    tx.globalAlpha = 0.18;
+    tx.fillStyle = '#fff';
+    tx.fillText(ch, size / 2, size / 2);
+    tx.globalAlpha = 1;
+    tx.globalCompositeOperation = 'source-over';
+    tileCache.set(key, t);
+    if(tileCache.size > 900) tileCache.clear();
+    return t;
+  }
+  function drawSprite(ch, x, y, color, intensity, cell, lights){
+    const t = tile(ch, color, cell);
+    const size = t.width;
+    if(intensity > 0.08) lights.push({ x, y, color, intensity });
+    cx.globalAlpha = Math.max(0, Math.min(1, intensity));
+    cx.drawImage(t, x - size / 2, y - size / 2);
+    cx.globalAlpha = 1;
+  }
+  function drawSurfaceGlow(w, h, lights, cell, gain){
+    const scale = 8;
+    const gw = Math.max(1, Math.ceil(w / scale));
+    const gh = Math.max(1, Math.ceil(h / scale));
+    glowCanvas.width = gw;
+    glowCanvas.height = gh;
+    gx.clearRect(0, 0, gw, gh);
+    gx.globalCompositeOperation = 'lighter';
+    const radius = Math.max(2, (cell * 2.1) / scale);
+    for(const light of lights){
+      const x = light.x / scale, y = light.y / scale;
+      const grad = gx.createRadialGradient(x, y, 0, x, y, radius);
+      grad.addColorStop(0, `hsla(${light.color.h}, ${light.color.s}%, ${light.color.l + 8}%, ${0.40 * light.intensity * gain})`);
+      grad.addColorStop(1, `hsla(${light.color.h}, ${light.color.s}%, ${light.color.l}%, 0)`);
+      gx.fillStyle = grad;
+      gx.beginPath();
+      gx.arc(x, y, radius, 0, Math.PI * 2);
+      gx.fill();
+    }
+    gx.globalCompositeOperation = 'source-over';
+    cx.save();
+    cx.globalCompositeOperation = 'lighter';
+    cx.imageSmoothingEnabled = true;
+    cx.drawImage(glowCanvas, 0, 0, w, h);
+    cx.restore();
+  }
+  function draw(targetCtx, planet, theme, tSec){
+    const r = Math.max(18, Math.min(420, planet.r));
+    const pad = Math.ceil(r * 0.18 + 44);
+    const size = Math.ceil(r * 2 + pad * 2);
+    const center = size / 2;
+    const seedKey = planet.seed.join(',');
+    if(lastRender &&
+       lastRender.size === size &&
+       lastRender.seedKey === seedKey &&
+       tSec - lastRender.t < 1 / 24){
+      targetCtx.save();
+      targetCtx.globalCompositeOperation = 'lighter';
+      targetCtx.drawImage(canvas, planet.x - center, planet.y - center);
+      targetCtx.restore();
+      return;
+    }
+    if(canvas.width !== size || canvas.height !== size){
+      canvas.width = size;
+      canvas.height = size;
+    }
+    cx.clearRect(0, 0, size, size);
+    const cell = Math.max(7, Math.min(18, Math.round(r / 21)));
+    const spacing = Math.max(2, Math.round(cell * 0.36));
+    const step = cell + spacing;
+    const seed = planet.seed;
+    const rot = tSec * 0.18;
+    const lights = [];
+    let count = 0;
+    cx.globalCompositeOperation = 'lighter';
+    for(let y = center - r; y <= center + r; y += step){
+      for(let x = center - r; x <= center + r; x += step){
+        const nx = (x - center) / r, ny = (y - center) / r;
+        const rr = nx * nx + ny * ny;
+        if(rr > 1) continue;
+        const nz = Math.sqrt(Math.max(0, 1 - rr));
+        const lon = Math.atan2(nx, nz) + rot;
+        const lat = Math.asin(-ny);
+        const u = lon / Math.PI;
+        const v = lat / (Math.PI / 2);
+        const n1 = Math.sin(u * 5.1 + Math.sin(v * 3.2) * 1.4 + seed[0]) * 0.5 + 0.5;
+        const n2 = Math.sin(u * 11.7 - v * 8.3 + seed[1] * 0.17) * 0.5 + 0.5;
+        const n3 = hash(Math.floor((u + 4) * 42), Math.floor((v + 2) * 38), seed[2]);
+        const continent = n1 * 0.55 + n2 * 0.30 + n3 * 0.15;
+        const light = Math.max(0, 0.22 + nz * 0.72 + nx * 0.22 - ny * 0.12);
+        const limb = smoothstep(0.05, 0.38, 1 - rr);
+        const polar = Math.abs(v);
+        let biome = 'water';
+        if(polar > 0.78) biome = 'ice';
+        else if(continent > 0.62) biome = 'land';
+        else if(continent > 0.54) biome = 'ridge';
+        if(continent > 0.74 && n3 > 0.72 && polar < 0.65) biome = 'city';
+        const nearCoast = Math.abs(continent - 0.58) < 0.075 && polar <= 0.78;
+        if(nearCoast) biome = 'coast';
+        if(biome === 'water' && continent < 0.40) biome = 'deepWater';
+        const densityNoise = hash(Math.floor((u + 4) * 95), Math.floor((v + 2) * 80), seed[0] + 99);
+        const biomeDensity = biome === 'deepWater' ? 0.74 : biome === 'water' ? 0.84 : biome === 'coast' ? 0.76 : biome === 'ridge' ? 0.64 : biome === 'ice' ? 0.54 : biome === 'city' ? 0.70 : 0.66;
+        const localVoid = biome === 'deepWater' ? 0.07 : biome === 'water' ? 0.09 : biome === 'coast' ? 0.14 : 0.30;
+        if(densityNoise <= localVoid || densityNoise >= biomeDensity + light * 0.30 || light < 0.18 || limb <= 0) continue;
+        const color =
+          biome === 'deepWater' ? colors.deepWater :
+          biome === 'water' ? colors.water :
+          biome === 'coast' ? (continent > 0.58 ? colors.coastLand : colors.coastWater) :
+          biome === 'land' ? (continent > 0.70 ? colors.landHi : colors.land) :
+          colors[biome];
+        const pool = glyphs[biome];
+        const ch = pool[Math.floor(hash(Math.floor(u * 120), Math.floor(v * 120), seed[1] + 7) * pool.length)];
+        const intensity = Math.min(1, light * limb * (biome === 'water' || biome === 'deepWater' ? 1.12 : biome === 'coast' ? 1.06 : 1) * (0.62 + densityNoise * 0.5));
+        drawSprite(ch, x, y, color, intensity, cell, lights);
+        count++;
+      }
+    }
+    for(let a = 0; a < Math.PI * 2; a += 0.075){
+      if(hash(Math.floor(a * 1000), 3, seed[2]) < 0.42) continue;
+      const sideLight = 0.35 + 0.65 * Math.max(0, Math.cos(a - 0.35));
+      const x = center + Math.cos(a) * r * 1.015;
+      const y = center + Math.sin(a) * r * 1.015;
+      const ch = Math.abs(Math.cos(a)) > Math.abs(Math.sin(a)) ? '|' : (Math.sin(a) > 0 ? '_' : '-');
+      drawSprite(ch, x, y, colors.ice, 0.35 + sideLight * 0.42, cell, lights);
+    }
+    drawSurfaceGlow(size, size, lights, cell, 1.35);
+    cx.globalCompositeOperation = 'source-over';
+    targetCtx.save();
+    targetCtx.globalCompositeOperation = 'lighter';
+    targetCtx.drawImage(canvas, planet.x - center, planet.y - center);
+    targetCtx.restore();
+    lastRender = { size, seedKey, t: tSec };
+  }
+  return { draw };
+})();
+
 /* ===== 9. Planet renderer ===== */
 const planetCanvas = document.getElementById('planetCanvas');
 const planetCtx = planetCanvas.getContext('2d');
@@ -3569,6 +3764,7 @@ function renderFlight(state, theme, dt){
      Pixel-space disc + camera-space depth. Anything with greater
      depth that projects inside the disc is considered hidden. */
   let planetOccluder = null;
+  let labPlanet = null;
   if(systemBodies && systemBodies.planet){
     const pWorld = [
       systemBodies.planet.pos[0] - state.ship.position[0],
@@ -3661,7 +3857,18 @@ function renderFlight(state, theme, dt){
       const py = (-cam[1]*FOV_FLIGHT)/cam[2] + H/2;
       const cxc = px / wCell, cyc = py / wCell;
       const rc = (systemBodies.planet.radius * FOV_FLIGHT) / cam[2] / wCell;
-      if(rc > 1.5){
+      if(NEW_PLANET_RENDERER){
+        const prPx = rc * wCell;
+        if(prPx > 18){
+          labPlanet = { x: px, y: py, r: prPx, seed: systemBodies.planet.sys.seed };
+        } else if(rc > 0.3){
+          const cx = Math.round(cxc), cy = Math.round(cyc);
+          if(cx>=0&&cx<wCols&&cy>=0&&cy<wRows){
+            lPlanet.grid[cy*wCols+cx] = 0.85;
+            lPlanet.chars[cy*wCols+cx] = '*';
+          }
+        }
+      } else if(rc > 1.5){
         // Sphere-projected biome rendering with 2x2 sub-cell sampling.
         // Per cell:
         //   * Sample 4 sub-points within the cell. For each one in
@@ -4386,6 +4593,9 @@ function renderFlight(state, theme, dt){
   // sun and planet layers are tagged atmospheric so they pick up the
   // wide haze pass at the end of renderLayers.
   renderLayers([lStars, lSun, lDust, lAnchor, lPlanet, lPlanetAcc], wCell, wCols, wRows, W, H);
+  if(NEW_PLANET_RENDERER && labPlanet){
+    planetGlyphRenderer.draw(ctx, labPlanet, theme, tSec);
+  }
 
   // World-fine pass — geometry that needs precision (NPC hull only,
   // now). Drawn BEFORE the cockpit mask so it's visible only
