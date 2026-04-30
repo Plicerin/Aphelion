@@ -2,6 +2,58 @@
 
 A briefing for picking up Aphelion development in a new session.
 
+## Latest session update — 2026-04-30
+
+**Main branch is pushed at:** `2cbfb2f Add glowing glyph planet renderer`
+
+The major lesson from the glow investigation is settled: **glyph placement was not the hard problem; the Effulgence-like look comes from a broad coloured light field behind/around the glyphs.** Post-process bloom, raw per-glyph `shadowBlur`, WebGL bloom, and a WebGPU detour all produced either no visible glow, blinding white blobs, circular/square artifacts, or a too-geometric washed-out surface.
+
+The useful prototype is `refs/glyph-lab.html` in the local worktree. It demonstrated the desired look by separating:
+
+1. crisp/baked glyph sprites,
+2. dense structured glyph placement for ocean/land/coast,
+3. a low-resolution coloured surface-glow field that is upscaled and additively composited,
+4. stable deterministic rotation rather than frame-dependent random motion.
+
+That approach was integrated into the actual flight renderer in `index.html` behind:
+
+```js
+const NEW_PLANET_RENDERER = true;
+```
+
+The in-game path now projects the real system planet, preserves the existing planet occluder, skips the old grid planet when the flag is enabled, and draws the new canvas glyph/glow planet before the cockpit mask. The old sphere-projected grid renderer is still present as the fallback path if `NEW_PLANET_RENDERER` is flipped to `false`.
+
+Performance note: the new planet renderer redraws the offscreen planet image at roughly 24 fps and composites the cached canvas every frame. This is a pragmatic bridge, not the final renderer. If performance is still low, the next improvement should be algorithmic/caching work on this canvas path, not another WebGPU rewrite.
+
+Validation from this session:
+
+- `npm run build` passes.
+- `http://127.0.0.1:5173/` responded locally.
+- Full `npm test` was not rerun after the final integration. Earlier in the glow-debug session it reported all 272 tests passing but then Vitest/Node crashed during teardown with `v8::ToLocalChecked Empty MaybeLocal`, so do not claim a clean test exit until rerun.
+
+Local worktree after the commit/push:
+
+```text
+ M package-lock.json
+?? refs/
+```
+
+Those were intentionally left out of the commit. `refs/` contains visual lab/reference work including `glyph-lab.html` and `glyph-lab-webgpu.html`; do not delete it casually. `glyph-lab-webgpu.html` is an experiment only and the user rejected its look.
+
+### Current next step
+
+Open the live game at `http://127.0.0.1:5173/` or `https://plicerin.github.io/Aphelion/` after GitHub Pages updates and judge the in-flight planet visually and by frame rate.
+
+If the look is acceptable but performance is bad, optimize this renderer:
+
+- cache full planet frames for more than one frame bucket,
+- render the light field at even lower resolution,
+- reduce glyph density based on projected radius,
+- pre-bake glyph tiles without relying on `shadowBlur`,
+- update the planet image only when rotation advances enough to matter visually.
+
+If the look is still wrong, go back to `refs/glyph-lab.html`, not WebGPU. The lab is the closest known match.
+
 ## What Aphelion is
 
 A glowing-ASCII space trading game inspired by Elite (1984) and Effulgence RPG (2025). Single-player, browser-based, ships as a single self-contained HTML file. Clean-room reimplementation — no copyrighted code from the original Elite, just inspiration and the publicly-released ship blueprint data.
@@ -23,7 +75,7 @@ The aesthetic conceit: you are receiving fragmented signals from a galaxy too fa
 
 **272 tests passing across 15 test files. ~50 commits on `main`.**
 
-**Two known bugs are open** — see "Open bugs" section below.
+**Known bugs / active risks are open** — see "Open bugs" section below.
 
 ## Architecture
 
@@ -167,9 +219,11 @@ The tint recipe is `glow-atlas.js` — the user dropped a complete drop-in mid-s
 
 ## Open bugs
 
-### 1. Per-glyph glow halos do not render visibly (parked since session-mid)
+### 1. Effulgence-style glow is only solved for the planet prototype/integration
 
-Even with the multiply-tint atlas above, the user reports halos still don't bleed out the way the Effulgence reference frames do. We tried, in order:
+The general per-glyph atlas/post-process approach did not reproduce the Effulgence look in the full game. The successful direction is the `refs/glyph-lab.html` approach now partially integrated into flight: crisp glyphs plus a separate low-resolution coloured surface-light field. This currently applies to the planet renderer only.
+
+What failed or was rejected:
 
 1. Bucket bloom (per-layer offscreen canvas + progressive `ctx.filter = 'blur(...)'`)
 2. Per-glyph atlas with `ctx.filter` blur
@@ -178,11 +232,13 @@ Even with the multiply-tint atlas above, the user reports halos still don't blee
 5. Stacked per-cell `shadowBlur` (3–5 fillText calls per cell)
 6. WebGL bloom postprocess (full GPU pipeline: half-res H+V blur, quarter-res H+V, additive composite)
 7. CSS `filter: blur()` on a stacked DOM canvas with `mix-blend-mode: screen`
-8. Per-glyph atlas with multiply-tint (current)
+8. Per-glyph atlas with multiply-tint
+9. WebGPU surface blur prototype (`refs/glyph-lab-webgpu.html`) — too geometric, washed out, and visually worse than the canvas lab
+10. WebGPU-accelerated canvas experiment — lost the glow and introduced inconsistent motion
 
-The WebGL attempt failed identically across Chrome / Edge / Firefox, which strongly suggests a fallback GPU backend on the user's machine (SwiftShader / D3D9 / `Microsoft Basic Render Driver`) that satisfies WebGL conformance but lacks linear filtering or framebuffer blits. The diagnostic panel in the cockpit was added to confirm this — see `#webgl-diag`.
+The WebGL attempt failed identically across Chrome / Edge / Firefox, which may indicate a fallback GPU backend on the user's machine, but do not assume that is the root cause. The latest browser question was whether Chrome has GPU acceleration enabled; the recommended checks are `chrome://gpu` and `chrome://version`.
 
-The bake-test buttons in that panel produce per-profile tile PNGs in a fresh tab. **The next person picking this up should start there**: open `normal` in a new tab, see what the actual baked halo looks like. Fat halo extending into the tile corners → bake works, the bug is in how it gets composited back onto `#stage`. Tight halo or none → the underlying primitive isn't blurring on this machine and we should pivot to the off-ramp (ship the no-halo aesthetic and treat glow as a premium-platform extra).
+For the next session: **do not start by trying another graphics API.** Start by visually evaluating the committed `NEW_PLANET_RENDERER` path. If it is close enough but slow, optimize the canvas algorithm/caches. If it is not close enough, return to `refs/glyph-lab.html`, which is the best-known visual match.
 
 `docs/bugs.md` has the full failed-attempts log.
 
@@ -223,6 +279,8 @@ Even with all of these, the user reports getting destroyed immediately on respaw
 - `test/planetSurface.test.ts` — 17 tests including seed-derived palette determinism.
 
 ### Render layer (`index.html`)
+- `NEW_PLANET_RENDERER = true` now routes the in-flight planet through `planetGlyphRenderer`, the lab-derived canvas renderer with dense ocean glyphs, coloured biome clusters, separate low-resolution surface glow, deterministic rotation, and a 24 fps offscreen render cache.
+- The old world-cell planet renderer remains in place behind the `NEW_PLANET_RENDERER` fallback branch.
 - `glyphAtlas` rewritten ~6 times. Current version: neutral cache + tinted LRU cache + multiply+destination-in tint pipeline. Tinted-cache cap = 1536 to avoid thrashing on planet views.
 - `renderLayers` reduced to a single `drawImage` per cell at `'lighter'`.
 - `bloomDOM` (CSS filter overlay) currently disabled.
